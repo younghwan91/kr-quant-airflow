@@ -1,0 +1,104 @@
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_META_USER}:${AIRFLOW_META_PASSWORD}@airflow-meta-db/${AIRFLOW_META_DB}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  KR_QUANT_SQLITE_PATH: ${KR_QUANT_SQLITE_PATH}
+  TIMESCALE_HOST: timescaledb
+  TIMESCALE_PORT: 5432
+  TIMESCALE_DB: ${TIMESCALE_DB}
+  TIMESCALE_USER: ${TIMESCALE_USER}
+  TIMESCALE_PASSWORD: ${TIMESCALE_PASSWORD}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  environment:
+    <<: *airflow-common-env
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./scripts:/opt/airflow/scripts
+    - ./logs:/opt/airflow/logs
+    - ../kr-quant:/opt/kr-quant
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-meta-db:
+      condition: service_healthy
+    timescaledb:
+      condition: service_healthy
+
+services:
+  airflow-meta-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${AIRFLOW_META_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_META_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_META_DB}
+    volumes:
+      - airflow-meta-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_META_USER}"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Shared app data — this is what the main PC queries over the LAN, kept
+  # separate from Airflow's own metadata DB above.
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    ports:
+      - "${TIMESCALE_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${TIMESCALE_USER}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD}
+      POSTGRES_DB: ${TIMESCALE_DB}
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./sql/init_timescale.sql:/docker-entrypoint-initdb.d/init_timescale.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${TIMESCALE_USER}"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    # KIWOOM_APP_KEY/SECRET only ever land here, to seed Airflow's encrypted
+    # Variables store below — webserver/scheduler never see them as plain
+    # container env (see README "Secrets"). Merges the shared env anchor
+    # instead of replacing it, so db-migrate still has SQL_ALCHEMY_CONN etc.
+    environment:
+      <<: *airflow-common-env
+      KIWOOM_APP_KEY: ${KIWOOM_APP_KEY}
+      KIWOOM_APP_SECRET: ${KIWOOM_APP_SECRET}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username "${AIRFLOW_ADMIN_USER}" --password "${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname kr-quant --lastname admin --role Admin --email admin@example.com || true
+        airflow variables set KIWOOM_APP_KEY "$$KIWOOM_APP_KEY"
+        airflow variables set KIWOOM_APP_SECRET "$$KIWOOM_APP_SECRET"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      - airflow-init
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      - airflow-init
+    restart: unless-stopped
+
+volumes:
+  airflow-meta-db-data:
+  timescale-data:
