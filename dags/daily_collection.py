@@ -50,13 +50,22 @@ def daily_collection():
         ], env=_kiwoom_env())
 
     @task
+    def collect_sector() -> None:
+        # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
+        # 겹침 — 병렬로 돌려도 서로 안 막음. 업종 65개뿐이라 ~1분 내 완료.
+        _run([
+            sys.executable, "-m", "kr_quant.collectors.sector_index",
+            "--prod", "--days", "10",
+        ], env=_kiwoom_env())
+
+    @task
     def sync_to_timescale() -> None:
         _run([
             sys.executable, "/opt/airflow/scripts/sync_to_timescale.py",
             "--sqlite", SQLITE_PATH, "--days", "7",
         ])
 
-    collect_both() >> sync_to_timescale()
+    [collect_both(), collect_sector()] >> sync_to_timescale()
 
 
 daily_collection()

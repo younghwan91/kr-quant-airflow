@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS credit_balance (
 );
 SELECT create_hypertable('credit_balance', 'date', if_not_exists => TRUE);
 
+CREATE TABLE IF NOT EXISTS sector_index (
+    code        TEXT NOT NULL,
+    name        TEXT,
+    date        DATE NOT NULL,
+    open        INTEGER,
+    high        INTEGER,
+    low         INTEGER,
+    close       INTEGER,
+    volume      BIGINT,
+    trade_value BIGINT,
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('sector_index', 'date', if_not_exists => TRUE);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
@@ -81,8 +95,10 @@ ALTER TABLE daily_bars SET (timescaledb.compress, timescaledb.compress_segmentby
 ALTER TABLE supply_demand SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE short_selling SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE credit_balance SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 
 SELECT add_compression_policy('daily_bars', INTERVAL '7 days');
 SELECT add_compression_policy('supply_demand', INTERVAL '7 days');
 SELECT add_compression_policy('short_selling', INTERVAL '7 days');
 SELECT add_compression_policy('credit_balance', INTERVAL '7 days');
+SELECT add_compression_policy('sector_index', INTERVAL '7 days');

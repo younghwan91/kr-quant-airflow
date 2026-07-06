@@ -42,11 +42,16 @@ CREDIT_BALANCE_COLS = [
     "new_qty", "repay_qty", "balance_qty", "balance_amt", "balance_rt", "credit_rt",
 ]
 
+SECTOR_INDEX_COLS = [
+    "code", "name", "date", "open", "high", "low", "close", "volume", "trade_value",
+]
+
 TABLES: dict[str, list[str]] = {
     "daily_bars": DAILY_BAR_COLS,
     "supply_demand": SUPPLY_DEMAND_COLS,
     "short_selling": SHORT_SELLING_COLS,
     "credit_balance": CREDIT_BALANCE_COLS,
+    "sector_index": SECTOR_INDEX_COLS,
 }
 
 
