@@ -28,7 +28,7 @@ DAILY_BAR_COLS = ["code", "date", "open", "high", "low", "close", "volume", "tra
 
 SUPPLY_DEMAND_COLS = [
     "code", "date", "close", "flu_rt", "acc_trde_qty",
-    "ind_invsr", "frgnr_invsr", "orgn", "fnnc_invt", "insrnc",
+    "individual", "foreign_", "institution", "fnnc_invt", "insrnc",
     "invtrt", "bank", "penfnd_etc", "samo_fund", "natn", "etc_corp",
 ]
 

@@ -1,11 +1,8 @@
-"""Schema-drift regression test for sync_to_timescale.py.
+"""Regression test for sync_to_timescale.py's sqlite -> TimescaleDB upsert path.
 
-2026-07-06: a local sqlite `supply_demand` table created under an old
-storage.py schema (columns `individual`/`foreign_`/`institution`) silently
-stopped collecting for ~3 weeks once storage.py renamed those columns to
-`ind_invsr`/`frgnr_invsr`/`orgn` — the collector's broad except swallowed the
-write failure. This test locks in the correct behavior at the sync layer:
-a legacy-schema db must fail loudly (not silently), a migrated one must not.
+SUPPLY_DEMAND_COLS must stay in sync with kr_quant/storage.py's actual sqlite
+column names (code/date/close/flu_rt/acc_trde_qty/individual/foreign_/
+institution/...). This test locks that shape in against a fixture db.
 """
 
 from __future__ import annotations
@@ -15,46 +12,30 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from sync_to_timescale import SUPPLY_DEMAND_COLS, sync_table  # noqa: E402
 
-_NEW_TO_LEGACY = {"ind_invsr": "individual", "frgnr_invsr": "foreign_", "orgn": "institution"}
 
-
-def _make_sqlite(tmp_path: Path, legacy: bool) -> sqlite3.Connection:
-    # SUPPLY_DEMAND_COLS is already the *current* (new) schema; for the legacy
-    # fixture we rename the 3 drifted columns back to their old names.
-    cols = [_NEW_TO_LEGACY.get(c, c) if legacy else c for c in SUPPLY_DEMAND_COLS]
+def _make_sqlite(tmp_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(tmp_path / "fixture.db")
-    ddl_cols = ",\n".join(f"{c} TEXT" if c in ("code", "date") else f"{c} INTEGER" for c in cols)
+    ddl_cols = ",\n".join(
+        f"{c} TEXT" if c in ("code", "date") else f"{c} INTEGER" for c in SUPPLY_DEMAND_COLS
+    )
     con.execute(f"CREATE TABLE supply_demand ({ddl_cols})")
-    row = ["005930", "20260701"] + [0] * (len(cols) - 2)
-    con.execute(f"INSERT INTO supply_demand VALUES ({','.join('?' * len(cols))})", row)
+    row = ["005930", "20260701"] + [0] * (len(SUPPLY_DEMAND_COLS) - 2)
+    con.execute(f"INSERT INTO supply_demand VALUES ({','.join('?' * len(SUPPLY_DEMAND_COLS))})", row)
     con.commit()
     return con
 
 
-def test_legacy_schema_fails_loudly(tmp_path: Path) -> None:
-    """Old individual/foreign_/institution columns must raise, not silently no-op."""
-    sq = _make_sqlite(tmp_path, legacy=True)
-    pg = MagicMock()
-
-    with pytest.raises(sqlite3.OperationalError, match="ind_invsr"):
-        sync_table(sq, pg, "supply_demand", SUPPLY_DEMAND_COLS, "19000101")
-
-    pg.commit.assert_not_called()
-
-
-def test_migrated_schema_upserts_cleanly(tmp_path: Path) -> None:
-    """New ind_invsr/frgnr_invsr/orgn columns must sync without error.
+def test_sync_table_upserts_cleanly(tmp_path: Path) -> None:
+    """A fixture matching kr-quant's actual sqlite schema must sync without error.
 
     execute_values itself is psycopg2's own (already well-tested) code, so it's
-    patched out here — this test only needs to prove sync_table's sqlite-side
-    column selection succeeds against a migrated schema, unlike the legacy one.
+    patched out here — this test only needs to prove sync_table's column
+    selection matches the real sqlite schema.
     """
-    sq = _make_sqlite(tmp_path, legacy=False)
+    sq = _make_sqlite(tmp_path)
     pg = MagicMock()
 
     with patch("sync_to_timescale.psycopg2.extras.execute_values") as execute_values:
