@@ -41,7 +41,7 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
 
 @dag(
     dag_id="daily_collection",
-    schedule="30 19 * * 1-5",  # 평일 19:30 KST — 장마감 데이터 확정 이후
+    schedule="0 16 * * 1-5",  # 평일 16:00 KST — 장마감(15:30) 직후, 데이터 확정 대기 30분
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
