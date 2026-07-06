@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 logs/
+cron_updown.log
 plugins/
 airflow.db
 .DS_Store
