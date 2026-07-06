@@ -1,6 +1,9 @@
-"""Daily 일봉+수급 수집 → TimescaleDB 동기화.
+"""Daily 일봉+수급+업종지수 수집 → TimescaleDB 직접 저장.
 
-신용잔고는 보통 T+1~2 지연 공시라 별도 DAG(daily_short_credit)로 분리했다.
+storage.py가 Postgres DSN을 받으면 TimescaleDB에 직접 upsert하므로(ON
+CONFLICT DO UPDATE — sqlite의 INSERT OR REPLACE와 동일한 자연키 upsert),
+별도 sync 스텝이 필요 없다. 신용잔고는 보통 T+1~2 지연 공시라 별도
+DAG(daily_short_credit)로 분리했다.
 """
 
 from __future__ import annotations
@@ -13,7 +16,13 @@ from datetime import datetime
 from airflow.decorators import dag, task
 from airflow.models import Variable
 
-SQLITE_PATH = os.environ.get("KR_QUANT_SQLITE_PATH", "/opt/kr-quant/data/kr_quant.db")
+
+def _timescale_dsn() -> str:
+    return (
+        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
+        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
+        f"/{os.environ['TIMESCALE_DB']}"
+    )
 
 
 def _kiwoom_env() -> dict[str, str]:
@@ -46,26 +55,21 @@ def daily_collection():
         # (kr-quant/README.md 참고).
         _run([
             sys.executable, "-m", "kr_quant.collectors.combined",
-            "--market", "all", "--prod", "--rate", "0.9",
+            "--market", "all", "--prod", "--rate", "0.9", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 
     @task
     def collect_sector() -> None:
         # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
-        # 겹침 — 병렬로 돌려도 서로 안 막음. 업종 65개뿐이라 ~1분 내 완료.
+        # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와
+        # 달리 단일 writer 제약 없음) — 병렬로 둬도 됨.
         _run([
             sys.executable, "-m", "kr_quant.collectors.sector_index",
-            "--prod", "--days", "10",
+            "--prod", "--days", "10", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 
-    @task
-    def sync_to_timescale() -> None:
-        _run([
-            sys.executable, "/opt/airflow/scripts/sync_to_timescale.py",
-            "--sqlite", SQLITE_PATH, "--days", "7",
-        ])
-
-    [collect_both(), collect_sector()] >> sync_to_timescale()
+    collect_both()
+    collect_sector()
 
 
 daily_collection()

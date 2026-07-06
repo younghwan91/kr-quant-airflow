@@ -1,8 +1,11 @@
-"""신용잔고(short_credit) 일일 수집 — daily_collection과 스케줄 분리.
+"""신용잔고(short_credit) 일일 수집 → TimescaleDB 직접 저장.
 
-거래소 신용잔고 공시는 T+1~2 지연되는 경우가 잦아, 일봉/수급과 같은 시각에
-돌리면 최신 데이터가 아직 안 나온 상태로 수집될 수 있다. 다음날 오전으로
-스케줄을 늦춰 잡는다.
+daily_collection과 스케줄 분리 — 거래소 신용잔고 공시는 T+1~2 지연되는
+경우가 잦아, 일봉/수급과 같은 시각에 돌리면 최신 데이터가 아직 안 나온
+상태로 수집될 수 있다. 다음날 오전으로 스케줄을 늦춰 잡는다.
+
+storage.py가 Postgres DSN을 받으면 TimescaleDB에 직접 upsert하므로 별도
+sync 스텝이 필요 없다.
 """
 
 from __future__ import annotations
@@ -15,7 +18,13 @@ from datetime import datetime
 from airflow.decorators import dag, task
 from airflow.models import Variable
 
-SQLITE_PATH = os.environ.get("KR_QUANT_SQLITE_PATH", "/opt/kr-quant/data/kr_quant.db")
+
+def _timescale_dsn() -> str:
+    return (
+        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
+        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
+        f"/{os.environ['TIMESCALE_DB']}"
+    )
 
 
 def _kiwoom_env() -> dict[str, str]:
@@ -46,17 +55,10 @@ def daily_short_credit():
     def collect_short_credit() -> None:
         _run([
             sys.executable, "-m", "kr_quant.collectors.short_credit",
-            "--market", "all", "--prod",
+            "--market", "all", "--prod", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 
-    @task
-    def sync_to_timescale() -> None:
-        _run([
-            sys.executable, "/opt/airflow/scripts/sync_to_timescale.py",
-            "--sqlite", SQLITE_PATH, "--days", "10",
-        ])
-
-    collect_short_credit() >> sync_to_timescale()
+    collect_short_credit()
 
 
 daily_short_credit()
