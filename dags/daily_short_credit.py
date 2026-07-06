@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from datetime import datetime
 
+import pendulum
 from airflow.decorators import dag, task
 from airflow.models import Variable
 
@@ -44,7 +44,7 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
 @dag(
     dag_id="daily_short_credit",
     schedule="0 10 * * 2-6",  # 화~토 10:00 KST (전날 공시 데이터 반영 이후)
-    start_date=datetime(2026, 1, 1),
+    start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
     tags=["kr-quant", "collection"],
