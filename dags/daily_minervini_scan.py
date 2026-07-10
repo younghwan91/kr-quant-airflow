@@ -69,7 +69,14 @@ def daily_minervini_scan():
             csv.writer(f).writerow([asof, breadth, regime, n, codes])
         print(f"{asof}: breadth={breadth:.0%} {regime} cand={n}")
 
-    scan_and_log()
+    @task
+    def track_rba() -> None:
+        """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언)."""
+        subprocess.run([sys.executable,
+            "/opt/kr-quant/research/operator_flow/minervini/rba_tracker.py",
+            "--db", _dsn()], cwd="/opt/kr-quant", check=False)
+
+    scan_and_log() >> track_rba()
 
 
 daily_minervini_scan()
