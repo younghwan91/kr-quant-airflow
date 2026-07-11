@@ -74,14 +74,15 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    # KIWOOM_APP_KEY/SECRET only ever land here, to seed Airflow's encrypted
-    # Variables store below — webserver/scheduler never see them as plain
-    # container env (see README "Secrets"). Merges the shared env anchor
+    # KIWOOM_APP_KEY/SECRET/DART_API_KEY only ever land here, to seed Airflow's
+    # encrypted Variables store below — webserver/scheduler never see them as
+    # plain container env (see README "Secrets"). Merges the shared env anchor
     # instead of replacing it, so db-migrate still has SQL_ALCHEMY_CONN etc.
     environment:
       <<: *airflow-common-env
       KIWOOM_APP_KEY: ${KIWOOM_APP_KEY}
       KIWOOM_APP_SECRET: ${KIWOOM_APP_SECRET}
+      DART_API_KEY: ${DART_API_KEY:-}
     entrypoint: /bin/bash
     command:
       - -c
@@ -91,6 +92,7 @@ services:
           --firstname kr-quant --lastname admin --role Admin --email admin@example.com || true
         airflow variables set KIWOOM_APP_KEY "$$KIWOOM_APP_KEY"
         airflow variables set KIWOOM_APP_SECRET "$$KIWOOM_APP_SECRET"
+        if [ -n "$$DART_API_KEY" ]; then airflow variables set DART_API_KEY "$$DART_API_KEY"; fi
 
   airflow-webserver:
     <<: *airflow-common
