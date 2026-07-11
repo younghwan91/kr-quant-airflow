@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS consensus (
 SELECT create_hypertable('consensus', 'date', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_consensus_date ON consensus(date);
 
+-- 일반 테이블: 거래일당 1행뿐이라(연 ~250행) 하이퍼테이블/압축 이점이 없음.
+CREATE TABLE IF NOT EXISTS minervini_scan (
+    date         TEXT NOT NULL,
+    breadth      DOUBLE PRECISION,
+    regime       TEXT,
+    n_candidates INTEGER,
+    codes        TEXT,
+    PRIMARY KEY (date)
+);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.

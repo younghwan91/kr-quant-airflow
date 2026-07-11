@@ -1,12 +1,19 @@
-"""일일 미너비니 규칙 스캐너 → 후보 + 레짐을 CSV에 누적 (RBA 축적).
+"""일일 미너비니 규칙 스캐너 → 후보 + 레짐을 CSV + DB에 누적 (RBA 축적).
 
 GOAL 루프 1-14에서 수렴한 순수 규칙 시스템(research/operator_flow/minervini/)을 매
 거래일 장 마감 후 실행해 (1) 시장 breadth 레짐 (2) 오늘의 진입 후보를 한 줄씩 append.
 미너비니의 최종 조언 — 이론 기대치(TBA)가 아니라 실제 매매 결과(RBA)로 리스크를 설계하려면
 실현 결과 데이터를 축적해야 한다 — 를 실행하는 파이프라인.
 
-출력: /opt/kr-quant/data/minervini_scan.csv (호스트 영속), 컬럼:
-  date, breadth, regime, n_candidates, codes(콤마구분)
+출력: /opt/kr-quant/data/minervini_scan.csv (호스트 영속) — rba_tracker.py가 이
+CSV를 직접 읽는 입력이라 계속 유지. 컬럼: date, breadth, regime, n_candidates,
+codes(콤마구분).
+
+**DB 병행 저장:** minervini_scan 테이블(PK: date, 일반 테이블 — 거래일당 1행뿐이라
+하이퍼테이블 이점 없음)에도 같은 행을 upsert — daily_bars·earnings 등과 SQL로
+조인 가능하게(README "다른 데이터랑 같이" 목표). CSV는 rba_tracker.py 호환을 위해
+그대로 두고, DB는 추가로만 씀(기존 소비자 안 건드림).
+
 무인증(DB만), Kiwoom 자격증명 불필요.
 """
 
@@ -72,6 +79,13 @@ def daily_minervini_scan():
             return
         with open(OUT, "a", newline="") as f:
             csv.writer(f).writerow([asof, breadth, regime, n, codes])
+
+        sys.path.insert(0, "/opt/kr-quant/src")
+        from kr_quant.storage import connect, upsert_minervini_scan
+        db_con = connect(_dsn())
+        upsert_minervini_scan(db_con, [(asof, breadth, regime, n, codes)])
+        db_con.close()
+
         print(f"{asof}: breadth={breadth:.0%} {regime} cand={n}")
 
     @task
