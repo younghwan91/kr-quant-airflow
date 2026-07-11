@@ -8,6 +8,12 @@
 네이버는 인증이 필요 없으므로 Kiwoom 자격증명이 불필요하다. 출력은
 ``/opt/kr-quant/data/consensus.csv`` (호스트 ../kr-quant/data 에 영속).
 수집기가 (date, code)로 중복을 걸러 하루 한 번만 append한다.
+
+**--all-codes(전종목) 사용 이유:** 원래 유동성 상위 800종목만 받았으나, DART와
+달리 네이버는 무인증·독립 레이트리밋이라 전종목(daily_bars 기준 ~2,600개)을
+매일 다 훑어도 다른 수집(특히 DART 일한도)과 자원 경합이 없다. 애널리스트
+커버리지가 없는 소형주는 자연히 스킵되어(수집기가 값이 전부 None이면
+행을 안 씀) 커버리지가 실제 애널리스트 커버 종목 수만큼만 쌓인다 — 무해함.
 """
 
 from __future__ import annotations
@@ -45,9 +51,9 @@ def daily_consensus():
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
         cmd = [
             sys.executable, "-m", "kr_quant.collectors.naver_consensus",
-            "--out", OUT, "--top-n", "800", "--db", _timescale_dsn(),
+            "--out", OUT, "--all-codes", "--db", _timescale_dsn(),
         ]
-        print(f"$ {' '.join(cmd)}")
+        print(f"$ {' '.join(cmd[:-2])} --db ***")
         subprocess.run(cmd, check=True, cwd="/opt/kr-quant")
 
     collect_consensus()
