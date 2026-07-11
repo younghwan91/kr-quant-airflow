@@ -155,6 +155,15 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
 SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);
 
+-- 일반 테이블: 종목당 1행뿐이고 시계열이 아니라 하이퍼테이블 대상 아님.
+CREATE TABLE IF NOT EXISTS delisted_stocks (
+    code            TEXT NOT NULL,
+    name            TEXT,
+    market          TEXT,
+    last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
+    PRIMARY KEY (code)
+);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
