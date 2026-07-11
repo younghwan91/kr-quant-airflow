@@ -141,6 +141,20 @@ CREATE TABLE IF NOT EXISTS minervini_scan (
     PRIMARY KEY (date)
 );
 
+CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
+    code        TEXT NOT NULL,
+    date        DATE NOT NULL,
+    open        DOUBLE PRECISION,  -- back-adjust 배수 적용 후라 daily_bars(INTEGER)와 달리 REAL/DOUBLE
+    high        DOUBLE PRECISION,
+    low         DOUBLE PRECISION,
+    close       DOUBLE PRECISION,
+    volume      BIGINT,            -- 미조정 원본 그대로(adjust_volume=False 기본값)
+    trade_value BIGINT,
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
@@ -151,6 +165,7 @@ ALTER TABLE credit_balance SET (timescaledb.compress, timescaledb.compress_segme
 ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE shares_outstanding_history SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE consensus SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+ALTER TABLE daily_bars_adjusted SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 
 SELECT add_compression_policy('daily_bars', INTERVAL '7 days');
 SELECT add_compression_policy('supply_demand', INTERVAL '7 days');
@@ -159,4 +174,5 @@ SELECT add_compression_policy('credit_balance', INTERVAL '7 days');
 SELECT add_compression_policy('sector_index', INTERVAL '7 days');
 SELECT add_compression_policy('shares_outstanding_history', INTERVAL '7 days');
 SELECT add_compression_policy('consensus', INTERVAL '7 days');
+SELECT add_compression_policy('daily_bars_adjusted', INTERVAL '7 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).
