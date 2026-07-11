@@ -41,8 +41,12 @@ def _timescale_dsn() -> str:
 
 def _dart_env() -> dict[str, str]:
     # DART 키는 Fernet 암호화 Variables에만 있음 — 수집 subprocess에만 주입.
+    # 보조키(DART_API_KEY_2)가 있으면 함께 주입 → collector가 일한도(020) 시 로테이션.
     env = os.environ.copy()
     env["DART_API_KEY"] = Variable.get("DART_API_KEY")
+    key2 = Variable.get("DART_API_KEY_2", default_var=None)
+    if key2:
+        env["DART_API_KEY_2"] = key2
     return env
 
 
