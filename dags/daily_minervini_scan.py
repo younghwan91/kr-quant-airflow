@@ -44,18 +44,23 @@ def daily_minervini_scan():
     @task
     def scan_and_log() -> None:
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
+        # 스캐너 결과를 sentinel 접두 한 줄로 방출 — 후보 0(약세 레짐)일 때 빈 codes로도
+        # 안전하게 파싱된다. 위치 기반 4줄 파싱은 빈 줄이 필터링돼 IndexError를 냈었다.
         code = (
             "import os,psycopg2,sys;sys.path.insert(0,'/opt/kr-quant/research/operator_flow/minervini');"
             "from scanner_final import scan;"
             f"con=psycopg2.connect('{_dsn()}');"
             "a,b,c=scan(con);con.close();"
-            "print(a);print(round(float(b),4));print(len(c));"
-            "print(','.join(c['code'].tolist()) if len(c) else '')"
+            "codes=','.join(c['code'].tolist()) if len(c) else '';"
+            "print('RESULT\\t%s\\t%s\\t%d\\t%s'%(a,round(float(b),4),len(c),codes))"
         )
         r = subprocess.run([sys.executable, "-c", code], cwd="/opt/kr-quant",
                            capture_output=True, text=True, check=True)
-        lines = [x for x in r.stdout.strip().splitlines() if x.strip() and "Warning" not in x]
-        asof, breadth, n, codes = lines[-4], float(lines[-3]), int(lines[-2]), lines[-1]
+        result = next((x for x in r.stdout.splitlines() if x.startswith("RESULT\t")), None)
+        if result is None:
+            raise RuntimeError(f"스캐너 결과 라인 없음. stdout={r.stdout!r} stderr={r.stderr[-500:]!r}")
+        _, asof, breadth_s, n_s, codes = result.split("\t", 4)
+        breadth, n = float(breadth_s), int(n_s)
         regime = "risk_on" if breadth > 0.5 else "risk_off"
         done = set()
         if os.path.exists(OUT):
