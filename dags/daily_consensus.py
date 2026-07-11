@@ -1,13 +1,16 @@
-"""애널리스트 컨센서스(목표주가·투자의견·추정실적) 일일 수집 → CSV 누적.
+"""애널리스트 컨센서스(목표주가·투자의견·추정실적) 일일 수집 → TimescaleDB 직접 저장.
 
 키움 브로커 API엔 컨센서스가 없고, 네이버 금융(FnGuide 출처)에 목표주가·
-투자의견·추정 EPS가 있다. 이 DAG는 매 거래일 스냅샷을 한 줄씩 append하여
+투자의견·추정 EPS가 있다. 이 DAG는 매 거래일 스냅샷을 한 줄씩 upsert하여
 **컨센서스 개정(revision) 시계열**을 축적한다 — 후행 PEAD가 무력한 초대형주의
 재평가를 미리 잡는 forward-looking 신호(docs/pead-strategy.md).
 
-네이버는 인증이 필요 없으므로 Kiwoom 자격증명이 불필요하다. 출력은
-``/opt/kr-quant/data/consensus.csv`` (호스트 ../kr-quant/data 에 영속).
-수집기가 (date, code)로 중복을 걸러 하루 한 번만 append한다.
+네이버는 인증이 필요 없으므로 Kiwoom 자격증명이 불필요하다.
+
+**DB 직접 저장(--db-table)으로 전환한 이유:** 원래는 CSV 전용이라 daily_bars·
+earnings 등 다른 데이터와 SQL로 조인이 안 됐다 — "다른 데이터랑 같이"라는
+프로젝트 목표(README)에 맞춰 consensus 테이블(PK: code, date)에 직접 upsert.
+sql/init_timescale.sql에 스키마 추가됨.
 
 **--all-codes(전종목) 사용 이유:** 원래 유동성 상위 800종목만 받았으나, DART와
 달리 네이버는 무인증·독립 레이트리밋이라 전종목(daily_bars 기준 ~2,600개)을
@@ -24,8 +27,6 @@ import sys
 
 import pendulum
 from airflow.decorators import dag, task
-
-OUT = "/opt/kr-quant/data/consensus.csv"
 
 
 def _timescale_dsn() -> str:
@@ -48,10 +49,9 @@ def daily_consensus():
 
     @task
     def collect_consensus() -> None:
-        os.makedirs(os.path.dirname(OUT), exist_ok=True)
         cmd = [
             sys.executable, "-m", "kr_quant.collectors.naver_consensus",
-            "--out", OUT, "--all-codes", "--db", _timescale_dsn(),
+            "--db-table", "--all-codes", "--db", _timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd[:-2])} --db ***")
         subprocess.run(cmd, check=True, cwd="/opt/kr-quant")
