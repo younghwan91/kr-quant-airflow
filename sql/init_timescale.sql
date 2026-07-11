@@ -88,6 +88,35 @@ CREATE TABLE IF NOT EXISTS sector_index (
 );
 SELECT create_hypertable('sector_index', 'date', if_not_exists => TRUE);
 
+CREATE TABLE IF NOT EXISTS shares_outstanding_history (
+    code               TEXT NOT NULL,
+    date               DATE NOT NULL,
+    shares_outstanding BIGINT,  -- INTEGER(32bit, max~21억)로는 삼성전자 등 대형주 발행주식수(수십억주)가 오버플로우함
+    PRIMARY KEY (code, date)
+);
+SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);
+
+-- 일반 테이블(하이퍼테이블 아님): 자연키가 (code, period)라 avail_date를 PK에
+-- 넣을 수 없고, TimescaleDB는 파티션 컬럼(avail_date)이 빠진 유니크 인덱스를
+-- 허용하지 않는다 — create_hypertable+PRIMARY KEY(code,period) 조합은 생성 시
+-- 에러남(실제 DB로 검증됨). storage.upsert_earnings()도 ON CONFLICT(code,period)
+-- 라 유니크 제약이 정확히 이 두 컬럼이어야 한다. 실적 데이터는 전종목 ~10년치도
+-- 수만~십만 행 규모라 압축/청크 이점이 거의 없어 일반 테이블로 충분하다.
+CREATE TABLE IF NOT EXISTS earnings (
+    code            TEXT NOT NULL,
+    period          TEXT NOT NULL,   -- e.g. '2020Q1'
+    avail_date      DATE NOT NULL,   -- lookahead-safe availability date (period-end + filing lag)
+    netinc          DOUBLE PRECISION,
+    netinc_prior    DOUBLE PRECISION,
+    revenue         DOUBLE PRECISION,
+    revenue_prior   DOUBLE PRECISION,
+    op_income       DOUBLE PRECISION,
+    op_income_prior DOUBLE PRECISION,
+    PRIMARY KEY (code, period)
+);
+CREATE INDEX IF NOT EXISTS idx_earnings_avail_date ON earnings(avail_date);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
@@ -96,9 +125,12 @@ ALTER TABLE supply_demand SET (timescaledb.compress, timescaledb.compress_segmen
 ALTER TABLE short_selling SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE credit_balance SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+ALTER TABLE shares_outstanding_history SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 
 SELECT add_compression_policy('daily_bars', INTERVAL '7 days');
 SELECT add_compression_policy('supply_demand', INTERVAL '7 days');
 SELECT add_compression_policy('short_selling', INTERVAL '7 days');
 SELECT add_compression_policy('credit_balance', INTERVAL '7 days');
 SELECT add_compression_policy('sector_index', INTERVAL '7 days');
+SELECT add_compression_policy('shares_outstanding_history', INTERVAL '7 days');
+-- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).
