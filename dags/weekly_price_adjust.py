@@ -35,13 +35,7 @@ import sys
 import pendulum
 from airflow.decorators import dag, task
 
-
-def _timescale_dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
+from _common import timescale_dsn
 
 
 @dag(
@@ -58,7 +52,7 @@ def weekly_price_adjust():
     def rebuild_adjusted() -> None:
         cmd = [
             sys.executable, "-m", "kr_quant.price_adjust",
-            "--rebuild-db", "--db", _timescale_dsn(),
+            "--rebuild-db", "--db", timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd[:-2])} --db ***")
         # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)

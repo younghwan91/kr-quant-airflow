@@ -37,7 +37,6 @@ weekly_earnings와 동일 패턴.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 
@@ -45,28 +44,10 @@ from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
-from airflow.models import Variable
+
+from _common import dart_env, timescale_dsn
 
 FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 필요한 기본값
-
-
-def _timescale_dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
-
-
-def _dart_env() -> dict[str, str]:
-    # DART 키는 Fernet 암호화 Variables에만 있음 — 수집 subprocess에만 주입.
-    # 보조키(DART_API_KEY_2)가 있으면 함께 주입 → collector가 일한도(020) 시 로테이션.
-    env = os.environ.copy()
-    env["DART_API_KEY"] = Variable.get("DART_API_KEY")
-    key2 = Variable.get("DART_API_KEY_2", default_var=None)
-    if key2:
-        env["DART_API_KEY_2"] = key2
-    return env
 
 
 @dag(
@@ -84,11 +65,11 @@ def earnings_backfill():
         cmd = [
             sys.executable, "-m", "collectors.dart_earnings",
             "--db-table", "--all-codes", "--from-year", FROM_YEAR,
-            "--db", _timescale_dsn(),
+            "--db", timescale_dsn(),
         ]
         # DSN(비밀번호 포함)을 로그에 남기지 않도록 --db 인자는 마스킹해서 출력
         print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=_dart_env())
+        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=dart_env())
         print("earnings 전체 이력 백필 실행 완료 (DB upsert, DART 일한도 도달 시 다음 트리거에서 자동 재개)")
 
     collect_earnings_backfill()

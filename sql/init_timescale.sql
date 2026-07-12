@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     trade_value BIGINT,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('daily_bars', 'date', if_not_exists => TRUE);
+-- 기본 7일 청크는 이 볼륨(~2,600종목×250거래일/년 ≈ 65만행/년)엔 과하게 잘게
+-- 쪼갬 — 청크 메타데이터 오버헤드 + 백테스트의 여러 해 스캔이 느려짐. 1년 청크로.
+SELECT create_hypertable('daily_bars', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
 CREATE TABLE IF NOT EXISTS supply_demand (
     code         TEXT NOT NULL,
@@ -152,7 +154,7 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     trade_value BIGINT,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);
 
 -- 일반 테이블: 종목당 1행뿐이고 시계열이 아니라 하이퍼테이블 대상 아님.

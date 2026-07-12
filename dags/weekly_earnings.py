@@ -26,30 +26,12 @@ from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
-from airflow.models import Variable
+
+from _common import dart_env, timescale_dsn
 
 OUT = "/opt/kr-quant/data/earnings_financials.csv"
 TOP_N = "500"       # 유동성 상위 N (중소형 cap-rank 100-400 커버 + DART 일한도 안전)
 FROM_YEAR = "2018"
-
-
-def _timescale_dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
-
-
-def _dart_env() -> dict[str, str]:
-    # DART 키는 Fernet 암호화 Variables에만 있음 — 수집 subprocess에만 주입.
-    # 보조키(DART_API_KEY_2)가 있으면 함께 주입 → collector가 일한도(020) 시 로테이션.
-    env = os.environ.copy()
-    env["DART_API_KEY"] = Variable.get("DART_API_KEY")
-    key2 = Variable.get("DART_API_KEY_2", default_var=None)
-    if key2:
-        env["DART_API_KEY_2"] = key2
-    return env
 
 
 @dag(
@@ -71,10 +53,10 @@ def weekly_earnings():
         cmd = [
             sys.executable, "-m", "collectors.dart_earnings",
             "--out", tmp, "--top-n", TOP_N, "--from-year", FROM_YEAR,
-            "--db", _timescale_dsn(),
+            "--db", timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd)}")
-        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=_dart_env())
+        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=dart_env())
         os.replace(tmp, OUT)  # 원자적 교체 — 성공 시에만 완본 갱신
         print(f"earnings refresh 완료 → {OUT}")
 

@@ -8,37 +8,14 @@ DAG(daily_short_credit)로 분리했다.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 
 from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
-from airflow.models import Variable
 
-
-def _timescale_dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
-
-
-def _kiwoom_env() -> dict[str, str]:
-    # Credentials live only in Airflow's Fernet-encrypted Variables store,
-    # not in container env — injected here for the collector subprocess only.
-    env = os.environ.copy()
-    env["KIWOOM_APP_KEY"] = Variable.get("KIWOOM_APP_KEY")
-    env["KIWOOM_APP_SECRET"] = Variable.get("KIWOOM_APP_SECRET")
-    return env
-
-
-def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
+from _common import kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -55,20 +32,20 @@ def daily_collection():
     def collect_both() -> None:
         # --prod: 실데이터. 모의서버 기본값은 실제 시세/수급이 아님
         # (kr-quant/README.md 참고).
-        _run([
+        run_collector([
             sys.executable, "-m", "collectors.combined",
-            "--market", "all", "--prod", "--rate", "0.9", "--db", _timescale_dsn(),
-        ], env=_kiwoom_env())
+            "--market", "all", "--prod", "--rate", "0.9", "--db", timescale_dsn(),
+        ], env=kiwoom_env())
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_sector() -> None:
         # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
         # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와
         # 달리 단일 writer 제약 없음) — 병렬로 둬도 됨.
-        _run([
+        run_collector([
             sys.executable, "-m", "collectors.sector_index",
-            "--prod", "--days", "10", "--db", _timescale_dsn(),
-        ], env=_kiwoom_env())
+            "--prod", "--days", "10", "--db", timescale_dsn(),
+        ], env=kiwoom_env())
 
     collect_both()
     collect_sector()

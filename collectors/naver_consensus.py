@@ -15,6 +15,7 @@ Writes CSV: date,code,target_mean,recomm_mean,base_date.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import os
@@ -113,6 +114,17 @@ def fetch_estimate(code: str) -> tuple[float | None, float | None, str | None]:
     return parse_estimate(d) if d else (None, None, None)
 
 
+def _fetch_both(
+    code: str, sleep: float,
+) -> tuple[str, float | None, float | None, str | None, float | None, float | None, str | None]:
+    """Both endpoints for one code — the unit of work handed to the thread pool."""
+    tm, rm, bd = fetch_consensus(code)
+    time.sleep(sleep)
+    fe, pe, ey = fetch_estimate(code)
+    time.sleep(sleep)
+    return code, tm, rm, bd, fe, pe, ey
+
+
 def _universe_query(args: argparse.Namespace) -> tuple[str, dict]:
     """SQL (+ params) selecting the code universe: all ``daily_bars`` codes or top-N liquid.
 
@@ -161,30 +173,33 @@ def main() -> int:
                 if r and r[0] == today:
                     done.add(r[1])  # (date, code) already collected today
 
+    pending = [c for c in codes if c not in done]
+
     f = open(args.out, "a", newline="") if args.out else None
     w = csv.writer(f) if f else None
     n = 0
-    for i, code in enumerate(codes, 1):
-        if code in done:
-            continue
-        tm, rm, bd = fetch_consensus(code)
-        time.sleep(args.sleep)
-        fe, pe, ey = fetch_estimate(code)
-        time.sleep(args.sleep)
-        if tm is None and rm is None and fe is None:
-            continue
+    # 종목당 2개 독립 엔드포인트(integration/finance-annual) 순차 호출 + sleep이라
+    # ~2,600종목이면 sleep만 수십 분 걸림 — 스레드풀로 종목 단위 fetch를 겹쳐서
+    # wall-clock을 줄인다. DB/CSV 쓰기는 메인 스레드에서만(순차) 수행해 커넥션을
+    # 스레드 간 공유하지 않는다.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(_fetch_both, code, args.sleep): code for code in pending}
+        for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            code, tm, rm, bd, fe, pe, ey = fut.result()
+            if tm is None and rm is None and fe is None:
+                continue
 
-        if args.db_table:
-            upsert_consensus(con, [(code, today, tm, rm, bd, fe, pe, ey)])
-        else:
-            def _s(x: object) -> object:
-                return x if x is not None else ""
-            w.writerow([today, code, _s(tm), _s(rm), bd or "", _s(fe), _s(pe), ey or ""])
-        n += 1
-        if i % 50 == 0:
-            if f:
-                f.flush()
-            print(f"[{i}/{len(codes)}] rows={n}", flush=True)
+            if args.db_table:
+                upsert_consensus(con, [(code, today, tm, rm, bd, fe, pe, ey)])
+            else:
+                def _s(x: object) -> object:
+                    return x if x is not None else ""
+                w.writerow([today, code, _s(tm), _s(rm), bd or "", _s(fe), _s(pe), ey or ""])
+            n += 1
+            if i % 50 == 0:
+                if f:
+                    f.flush()
+                print(f"[{i}/{len(pending)}] rows={n}", flush=True)
     if f:
         f.close()
     if args.db_table:

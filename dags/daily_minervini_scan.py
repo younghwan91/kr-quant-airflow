@@ -19,20 +19,13 @@ I/O라 kr-quant-airflow/collectors/로 이전됨.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 
 import pendulum
 from airflow.decorators import dag, task
 
-
-def _dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
+from _common import timescale_dsn
 
 
 @dag(
@@ -52,7 +45,7 @@ def daily_minervini_scan():
         code = (
             "import os,psycopg2,sys;sys.path.insert(0,'/opt/kr-quant/research/operator_flow/minervini');"
             "from scanner_final import scan;"
-            f"con=psycopg2.connect('{_dsn()}');"
+            f"con=psycopg2.connect('{timescale_dsn()}');"
             "a,b,c=scan(con);con.close();"
             "codes=','.join(c['code'].tolist()) if len(c) else '';"
             "print('RESULT\\t%s\\t%s\\t%d\\t%s'%(a,round(float(b),4),len(c),codes))"
@@ -68,7 +61,7 @@ def daily_minervini_scan():
 
         sys.path.insert(0, "/opt/airflow")
         from collectors.storage import connect, upsert_minervini_scan
-        db_con = connect(_dsn())
+        db_con = connect(timescale_dsn())
         upsert_minervini_scan(db_con, [(asof, breadth, regime, n, codes)])  # PK(date) upsert — 재실행해도 안전
         db_con.close()
 
@@ -78,7 +71,7 @@ def daily_minervini_scan():
     def track_rba() -> None:
         """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언)."""
         subprocess.run([sys.executable, "-m", "collectors.rba_tracker",
-            "--db", _dsn()], cwd="/opt/airflow", check=False)
+            "--db", timescale_dsn()], cwd="/opt/airflow", check=False)
 
     scan_and_log() >> track_rba()
 

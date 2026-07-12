@@ -10,37 +10,14 @@ sync 스텝이 필요 없다.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 
 from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
-from airflow.models import Variable
 
-
-def _timescale_dsn() -> str:
-    return (
-        f"postgresql://{os.environ['TIMESCALE_USER']}:{os.environ['TIMESCALE_PASSWORD']}"
-        f"@{os.environ['TIMESCALE_HOST']}:{os.environ.get('TIMESCALE_PORT', '5432')}"
-        f"/{os.environ['TIMESCALE_DB']}"
-    )
-
-
-def _kiwoom_env() -> dict[str, str]:
-    # Credentials live only in Airflow's Fernet-encrypted Variables store,
-    # not in container env — injected here for the collector subprocess only.
-    env = os.environ.copy()
-    env["KIWOOM_APP_KEY"] = Variable.get("KIWOOM_APP_KEY")
-    env["KIWOOM_APP_SECRET"] = Variable.get("KIWOOM_APP_SECRET")
-    return env
-
-
-def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
+from _common import kiwoom_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -55,10 +32,10 @@ def daily_short_credit():
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_short_credit() -> None:
-        _run([
+        run_collector([
             sys.executable, "-m", "collectors.short_credit",
-            "--market", "all", "--prod", "--db", _timescale_dsn(),
-        ], env=_kiwoom_env())
+            "--market", "all", "--prod", "--db", timescale_dsn(),
+        ], env=kiwoom_env())
 
     collect_short_credit()
 
