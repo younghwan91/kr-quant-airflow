@@ -34,6 +34,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 from airflow.models import Variable
@@ -68,7 +70,7 @@ def _dart_env() -> dict[str, str]:
 )
 def daily_earnings():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_earnings() -> None:
         cmd = [
             sys.executable, "-m", "collectors.dart_earnings",

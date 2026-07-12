@@ -18,6 +18,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 from airflow.models import Variable
@@ -53,7 +55,7 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
 )
 def daily_collection_catchup():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def catchup_both() -> None:
         _run([
             sys.executable, "-m", "collectors.combined",

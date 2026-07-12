@@ -186,7 +186,9 @@ ALTER TABLE credit_balance SET (timescaledb.compress, timescaledb.compress_segme
 ALTER TABLE sector_index SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE shares_outstanding_history SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
 ALTER TABLE consensus SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
-ALTER TABLE daily_bars_adjusted SET (timescaledb.compress, timescaledb.compress_segmentby = 'code');
+-- daily_bars_adjusted는 압축 대상에서 제외 — weekly_price_adjust가 매주 전체를
+-- upsert로 재작성하므로, 압축을 걸면 매주 오래된 청크를 압축해제→재압축하는
+-- 순환이 반복돼 이득 없이 CPU/IO만 낭비된다(주간 전체재생성 테이블 특성).
 
 SELECT add_compression_policy('daily_bars', INTERVAL '7 days');
 SELECT add_compression_policy('supply_demand', INTERVAL '7 days');
@@ -195,5 +197,4 @@ SELECT add_compression_policy('credit_balance', INTERVAL '7 days');
 SELECT add_compression_policy('sector_index', INTERVAL '7 days');
 SELECT add_compression_policy('shares_outstanding_history', INTERVAL '7 days');
 SELECT add_compression_policy('consensus', INTERVAL '7 days');
-SELECT add_compression_policy('daily_bars_adjusted', INTERVAL '7 days');
 -- earnings는 일반 테이블이라 압축/보존 정책 대상 아님 (위 CREATE TABLE 주석 참고).

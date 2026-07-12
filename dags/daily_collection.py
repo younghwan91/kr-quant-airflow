@@ -12,6 +12,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 from airflow.models import Variable
@@ -49,7 +51,7 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
 )
 def daily_collection():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_both() -> None:
         # --prod: 실데이터. 모의서버 기본값은 실제 시세/수급이 아님
         # (kr-quant/README.md 참고).
@@ -58,7 +60,7 @@ def daily_collection():
             "--market", "all", "--prod", "--rate", "0.9", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_sector() -> None:
         # 별도 TR(ka20003/ka20006)이라 collect_both와 레이트리밋 버킷이 안
         # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와

@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 from airflow.models import Variable
@@ -51,7 +53,7 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
 )
 def daily_short_credit():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_short_credit() -> None:
         _run([
             sys.executable, "-m", "collectors.short_credit",

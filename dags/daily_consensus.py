@@ -25,6 +25,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -47,7 +49,7 @@ def _timescale_dsn() -> str:
 )
 def daily_consensus():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_consensus() -> None:
         cmd = [
             sys.executable, "-m", "collectors.naver_consensus",

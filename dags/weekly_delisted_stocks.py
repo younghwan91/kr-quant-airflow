@@ -21,6 +21,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -43,7 +45,7 @@ def _timescale_dsn() -> str:
 )
 def weekly_delisted_stocks():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_delisted() -> None:
         cmd = [
             sys.executable, "-m", "collectors.krx_delisted",

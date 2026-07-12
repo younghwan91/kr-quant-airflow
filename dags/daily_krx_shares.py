@@ -20,6 +20,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -42,7 +44,7 @@ def _timescale_dsn() -> str:
 )
 def daily_krx_shares():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_krx_shares() -> None:
         # KST 당일(거래일이면 데이터 존재, 휴장일이면 collector가 codes=0로 무해 처리)
         today = pendulum.now("Asia/Seoul").to_date_string()
