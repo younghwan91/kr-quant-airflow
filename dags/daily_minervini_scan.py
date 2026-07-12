@@ -7,7 +7,12 @@ GOAL 루프 1-14에서 수렴한 순수 규칙 시스템(research/operator_flow/
 
 minervini_scan 테이블(PK: date, 일반 테이블 — 거래일당 1행뿐이라 하이퍼테이블 이점
 없음)에 upsert — daily_bars·earnings 등과 SQL로 조인 가능하게(README "다른 데이터랑
-같이" 목표). rba_tracker.py도 이 테이블을 직접 읽으므로 CSV 출력은 없다.
+같이" 목표). collectors/rba_tracker.py도 이 테이블을 직접 읽으므로 CSV 출력은 없다.
+
+scanner_final.py(전략 로직, GOAL 루프 1-14 산물)는 kr-quant에 그대로 남아 있어
+/opt/kr-quant 마운트를 통해 접근한다 — 콜렉터 이전과 무관하게 analysis 코드는 계속
+private 레포에 있는다. DB 쓰기(upsert_minervini_scan)와 rba_tracker.py는 순수 DB
+I/O라 kr-quant-airflow/collectors/로 이전됨.
 
 무인증(DB만), Kiwoom 자격증명 불필요.
 """
@@ -61,8 +66,8 @@ def daily_minervini_scan():
         breadth, n = float(breadth_s), int(n_s)
         regime = "risk_on" if breadth > 0.5 else "risk_off"
 
-        sys.path.insert(0, "/opt/kr-quant/src")
-        from kr_quant.storage import connect, upsert_minervini_scan
+        sys.path.insert(0, "/opt/airflow")
+        from collectors.storage import connect, upsert_minervini_scan
         db_con = connect(_dsn())
         upsert_minervini_scan(db_con, [(asof, breadth, regime, n, codes)])  # PK(date) upsert — 재실행해도 안전
         db_con.close()
@@ -72,9 +77,8 @@ def daily_minervini_scan():
     @task
     def track_rba() -> None:
         """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언)."""
-        subprocess.run([sys.executable,
-            "/opt/kr-quant/research/operator_flow/minervini/rba_tracker.py",
-            "--db", _dsn()], cwd="/opt/kr-quant", check=False)
+        subprocess.run([sys.executable, "-m", "collectors.rba_tracker",
+            "--db", _dsn()], cwd="/opt/airflow", check=False)
 
     scan_and_log() >> track_rba()
 

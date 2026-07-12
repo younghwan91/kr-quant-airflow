@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# kr-quant mounted read-write at /opt/kr-quant (sibling repo on host).
-# --no-deps: its deps (kiwoom-client, pandas) are already baked into the
-# image; re-resolving them on every container start would just be slow.
-pip install --no-deps -e /opt/kr-quant -q
+# Collectors are self-contained (./collectors, image deps only) — no editable
+# install of kr-quant needed anymore. kr-quant is still mounted read-only at
+# /opt/kr-quant for the 2 DAGs that intentionally run its analysis code
+# in-place (daily_minervini_scan.py's scanner_final.py, weekly_price_adjust.py's
+# kr_quant.price_adjust, both via PYTHONPATH/sys.path, not a package install).
 
 exec /entrypoint "$@"

@@ -36,7 +36,7 @@ def _kiwoom_env() -> dict[str, str]:
 
 def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=env)
+    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
 
 
 @dag(
@@ -54,7 +54,7 @@ def daily_collection():
         # --prod: 실데이터. 모의서버 기본값은 실제 시세/수급이 아님
         # (kr-quant/README.md 참고).
         _run([
-            sys.executable, "-m", "kr_quant.collectors.combined",
+            sys.executable, "-m", "collectors.combined",
             "--market", "all", "--prod", "--rate", "0.9", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 
@@ -64,7 +64,7 @@ def daily_collection():
         # 겹침. TimescaleDB는 MVCC라 두 태스크가 동시에 써도 안전(sqlite와
         # 달리 단일 writer 제약 없음) — 병렬로 둬도 됨.
         _run([
-            sys.executable, "-m", "kr_quant.collectors.sector_index",
+            sys.executable, "-m", "collectors.sector_index",
             "--prod", "--days", "10", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 

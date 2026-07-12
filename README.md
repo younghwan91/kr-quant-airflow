@@ -4,8 +4,12 @@
 
 ## 역할 분리
 
-- **kr-quant**: 키움 REST API 수집 로직 + 백테스트/스코어링 라이브러리. 로컬 SQLite에 씀.
-- **kr-quant-airflow** (이 레포): 수집 스케줄링, 재시도/모니터링, SQLite → TimescaleDB 동기화.
+- **kr-quant** (private): 전략/피처 분석 라이브러리(백테스트, SEPA, PEAD, minervini 등). 데이터 수집 로직은 더 이상 여기 없음.
+- **kr-quant-airflow** (이 레포, public): 데이터 수집(`collectors/` — DART/키움/KRX/네이버) + 스케줄링 + TimescaleDB 적재를 자체 보유.
+
+수집 로직(`collectors/`)이 이 레포로 이전된 이유: (1) 분석 세션에서 실수로 수집기를 직접 실행해 DB 정합성이 깨지는 사고를 방지 — 분석(private)과 수집(이 레포)이 완전히 분리된 프로세스/레포가 됨, (2) 수집 로직을 오픈소스로 공유하기 위해 private 레포에 갇혀 있을 이유를 없앰. `collectors/`는 `kr_quant` 패키지에 대한 런타임 의존이 전혀 없다(자체 `collectors/storage.py`, `collectors/config.py` 보유).
+
+예외적으로 kr-quant는 여전히 `/opt/kr-quant`로 마운트된다 — `daily_minervini_scan.py`(scanner_final.py 전략 로직)와 `weekly_price_adjust.py`(kr_quant.price_adjust 백조정 로직) 2개 DAG가 in-place로 kr-quant의 analysis 코드를 실행하기 때문(PYTHONPATH/sys.path 기반, 패키지 설치 아님).
 
 ```
 spare PC (Ubuntu, 이 레포)                 main PC (kr-quant)
@@ -20,7 +24,6 @@ spare PC (Ubuntu, 이 레포)                 main PC (kr-quant)
 └─────────────────────────────┘
 ```
 
-collector 코드(`kr_quant/storage.py`)는 건드리지 않는다 — 이미 9곳에서 쓰이는 테스트된 핫패스라, 백엔드 분기 로직을 넣기보다 "로컬 sqlite에 쓰고, 별도 태스크가 TimescaleDB로 동기화"하는 단방향 sync로 분리했다.
 
 ## 사전 준비 (스페어 PC, Ubuntu)
 
@@ -36,10 +39,11 @@ Airflow 웹서버: http://<spare-pc-ip>:8080
 
 ## 구조
 
-- `dags/daily_collection.py` — 일봉+수급 수집 → 신용잔고 수집(별도 스케줄, T+1~2 지연 고려) → TimescaleDB 동기화
-- `scripts/sync_to_timescale.py` — sqlite → TimescaleDB 증분 upsert
-- `sql/init_timescale.sql` — hypertable 스키마 (daily_bars, supply_demand, short_selling, credit_balance)
-- `docker/Dockerfile` — kr-quant를 editable로 설치한 커스텀 Airflow 이미지
+- `dags/*.py` — 12개 DAG(일별/주별 시세·수급·실적·컨센서스·미너비니 스캔 등), 대부분 `collectors.X`를 subprocess로 호출
+- `collectors/` — 데이터 수집 로직 자체 보유(DART/키움/KRX/네이버), `dags/`·`scripts/`처럼 바인드마운트되는 디렉토리. `collectors/storage.py`가 스키마+upsert 전체를 가짐
+- `scripts/sync_to_timescale.py` — sqlite → TimescaleDB 증분 upsert(레거시 경로, 대부분의 DAG는 이제 TimescaleDB에 직접 씀)
+- `sql/init_timescale.sql` — hypertable 스키마 (daily_bars, supply_demand, short_selling, credit_balance, earnings, minervini_scan/rba 등)
+- `docker/Dockerfile` — collectors/ 자체 의존성만 설치하는 Airflow 이미지 (kr-quant editable install 없음)
 - `docker-compose.yml` — Airflow(webserver/scheduler) + Airflow 메타 Postgres + TimescaleDB(앱 데이터, LAN 오픈)
 
 ## 메인 PC에서 데이터 읽기

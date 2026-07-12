@@ -40,7 +40,7 @@ def _kiwoom_env() -> dict[str, str]:
 
 def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=env)
+    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
 
 
 @dag(
@@ -56,7 +56,7 @@ def daily_collection_catchup():
     @task
     def catchup_both() -> None:
         _run([
-            sys.executable, "-m", "kr_quant.collectors.combined",
+            sys.executable, "-m", "collectors.combined",
             "--market", "all", "--prod", "--rate", "0.9", "--update",
             "--db", _timescale_dsn(),
         ], env=_kiwoom_env())

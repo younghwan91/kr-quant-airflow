@@ -82,13 +82,13 @@ def earnings_backfill():
     @task(retries=2, retry_delay=timedelta(minutes=30))
     def collect_earnings_backfill() -> None:
         cmd = [
-            sys.executable, "-m", "kr_quant.collectors.dart_earnings",
+            sys.executable, "-m", "collectors.dart_earnings",
             "--db-table", "--all-codes", "--from-year", FROM_YEAR,
             "--db", _timescale_dsn(),
         ]
         # DSN(비밀번호 포함)을 로그에 남기지 않도록 --db 인자는 마스킹해서 출력
         print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=_dart_env())
+        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=_dart_env())
         print("earnings 전체 이력 백필 실행 완료 (DB upsert, DART 일한도 도달 시 다음 트리거에서 자동 재개)")
 
     collect_earnings_backfill()

@@ -7,3 +7,4 @@ cron_updown.log
 plugins/
 airflow.db
 .DS_Store
+.omc/

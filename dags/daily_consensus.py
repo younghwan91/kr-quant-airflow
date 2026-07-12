@@ -50,11 +50,11 @@ def daily_consensus():
     @task
     def collect_consensus() -> None:
         cmd = [
-            sys.executable, "-m", "kr_quant.collectors.naver_consensus",
+            sys.executable, "-m", "collectors.naver_consensus",
             "--db-table", "--all-codes", "--db", _timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant")
+        subprocess.run(cmd, check=True, cwd="/opt/airflow")
 
     collect_consensus()
 

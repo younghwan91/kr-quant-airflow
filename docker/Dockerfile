@@ -1,7 +1,9 @@
-# kr-quant isn't published to PyPI (see kr-quant/README.md), so it's
-# installed editable from the sibling repo mounted at /opt/kr-quant — done
-# at container start (entrypoint-wrapper.sh), not build time, so a
-# `git pull` on the host picks up new collector code without an image rebuild.
+# Collectors (./collectors, bind-mounted like dags/scripts) are self-contained
+# and no longer need kr-quant installed — see docker/entrypoint-wrapper.sh and
+# collectors/storage.py. kr-quant (private repo) is still bind-mounted at
+# /opt/kr-quant for 2 DAGs that intentionally run its analysis code in-place
+# (daily_minervini_scan.py, weekly_price_adjust.py), reached via
+# PYTHONPATH/sys.path rather than a package install.
 FROM apache/airflow:2.10.5-python3.11
 
 USER airflow

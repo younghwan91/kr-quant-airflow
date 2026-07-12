@@ -39,7 +39,7 @@ def _kiwoom_env() -> dict[str, str]:
 
 def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=env)
+    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
 
 
 @dag(
@@ -55,7 +55,7 @@ def weekly_listed_shares():
     @task
     def collect_listed_shares() -> None:
         _run([
-            sys.executable, "-m", "kr_quant.collectors.listed_shares",
+            sys.executable, "-m", "collectors.listed_shares",
             "--market", "all", "--prod", "--db", _timescale_dsn(),
         ], env=_kiwoom_env())
 

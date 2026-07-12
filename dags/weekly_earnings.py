@@ -67,12 +67,12 @@ def weekly_earnings():
         if os.path.exists(tmp):
             os.remove(tmp)  # 전체 재생성: 빈 tmp에서 시작해 모든 종목·분기 재수집
         cmd = [
-            sys.executable, "-m", "kr_quant.collectors.dart_earnings",
+            sys.executable, "-m", "collectors.dart_earnings",
             "--out", tmp, "--top-n", TOP_N, "--from-year", FROM_YEAR,
             "--db", _timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd)}")
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=_dart_env())
+        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=_dart_env())
         os.replace(tmp, OUT)  # 원자적 교체 — 성공 시에만 완본 갱신
         print(f"earnings refresh 완료 → {OUT}")
 

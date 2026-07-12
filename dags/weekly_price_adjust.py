@@ -18,6 +18,12 @@ daily_bars 원자료(미조정)를 직접 읽는다 — 분할이 가짜 −68% 
 충분히 저렴하다.
 
 무인증(DB만), Kiwoom/DART 자격증명 불필요.
+
+kr_quant.price_adjust의 핵심 로직(adjust_prices/diagnose)은 strategies/sepa_experiment.py가
+in-process import하므로 kr-quant에 계속 남아 있다 — 콜렉터 이전과 무관. 그래서 이 DAG는
+(daily_minervini_scan의 scanner_final.py처럼) /opt/kr-quant 마운트를 통해 계속 kr_quant를
+실행한다. 다만 collectors/ 이전 이후 kr-quant의 editable pip install은 더 이상 하지
+않으므로(entrypoint-wrapper.sh), PYTHONPATH로 대신 kr_quant를 찾게 한다.
 """
 
 from __future__ import annotations
@@ -55,7 +61,9 @@ def weekly_price_adjust():
             "--rebuild-db", "--db", _timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant")
+        # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
+        env = {**os.environ, "PYTHONPATH": "/opt/kr-quant/src"}
+        subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=env)
 
     rebuild_adjusted()
 

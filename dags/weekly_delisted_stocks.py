@@ -46,11 +46,11 @@ def weekly_delisted_stocks():
     @task
     def collect_delisted() -> None:
         cmd = [
-            sys.executable, "-m", "kr_quant.collectors.krx_delisted",
+            sys.executable, "-m", "collectors.krx_delisted",
             "--db", _timescale_dsn(),
         ]
         print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant")
+        subprocess.run(cmd, check=True, cwd="/opt/airflow")
 
     collect_delisted()
 

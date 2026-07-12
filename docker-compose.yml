@@ -28,8 +28,12 @@ x-airflow-common: &airflow-common
     <<: *airflow-common-env
   volumes:
     - ./dags:/opt/airflow/dags
+    - ./collectors:/opt/airflow/collectors
     - ./scripts:/opt/airflow/scripts
     - ./logs:/opt/airflow/logs
+    # 콜렉터는 이제 자체 보유(./collectors) — 이 마운트는 daily_minervini_scan.py의
+    # scanner_final.py, weekly_price_adjust.py의 kr_quant.price_adjust 등
+    # analysis 코드 2건 실행에만 남아 있음(README/Dockerfile 참고).
     - ../kr-quant:/opt/kr-quant
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
@@ -84,6 +88,7 @@ services:
       KIWOOM_APP_SECRET: ${KIWOOM_APP_SECRET}
       DART_API_KEY: ${DART_API_KEY:-}
       DART_API_KEY_2: ${DART_API_KEY_2:-}
+      DART_API_KEY_3: ${DART_API_KEY_3:-}
     entrypoint: /bin/bash
     command:
       - -c
@@ -95,6 +100,7 @@ services:
         airflow variables set KIWOOM_APP_SECRET "$$KIWOOM_APP_SECRET"
         if [ -n "$$DART_API_KEY" ]; then airflow variables set DART_API_KEY "$$DART_API_KEY"; fi
         if [ -n "$$DART_API_KEY_2" ]; then airflow variables set DART_API_KEY_2 "$$DART_API_KEY_2"; fi
+        if [ -n "$$DART_API_KEY_3" ]; then airflow variables set DART_API_KEY_3 "$$DART_API_KEY_3"; fi
 
   airflow-webserver:
     <<: *airflow-common
