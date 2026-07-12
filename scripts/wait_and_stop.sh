@@ -51,7 +51,7 @@ pending=()
 # schedule="5 10 * * *" in daily_collection_catchup.py — runs every day
 pending+=("daily_collection_catchup")
 # schedule="0 16 * * 1-5" in daily_collection.py
-if [ "$today_dow" -ge 1 ] && [ "$today_dow" -le 5 ]; then
+if [ "$today_dow" -le 5 ]; then
     pending+=("daily_collection")
 fi
 # schedule="0 10 * * 2-6" in daily_short_credit.py
@@ -63,13 +63,14 @@ if [ "$today_dow" -eq 1 ]; then
     pending+=("weekly_listed_shares")
 fi
 
-if [ ${#pending[@]} -eq 0 ]; then
-    log "오늘은 예약된 DAG가 없음 — 바로 종료"
+log "대기 대상 DAG: ${pending[*]}"
+
+shutdown() {
+    report_coverage
+    log "$1"
     docker compose stop
     exit 0
-fi
-
-log "대기 대상 DAG: ${pending[*]}"
+}
 
 is_done() {
     local dag_id="$1"
@@ -104,18 +105,11 @@ while :; do
     done
 
     if [ ${#pending[@]} -eq 0 ]; then
-        log "모든 DAG 완료"
-        report_coverage
-        log "컨테이너 종료"
-        docker compose stop
-        exit 0
+        shutdown "모든 DAG 완료 — 컨테이너 종료"
     fi
 
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-        log "22:00 안전장치 도달, 미완료(${pending[*]})인 채로 종료"
-        report_coverage
-        docker compose stop
-        exit 0
+        shutdown "22:00 안전장치 도달, 미완료(${pending[*]})인 채로 종료"
     fi
 
     sleep "$POLL_INTERVAL"
