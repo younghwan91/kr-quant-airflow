@@ -1,33 +1,25 @@
-"""일일 미너비니 규칙 스캐너 → 후보 + 레짐을 CSV + DB에 누적 (RBA 축적).
+"""일일 미너비니 규칙 스캐너 → 후보 + 레짐을 DB에 누적 (RBA 축적).
 
 GOAL 루프 1-14에서 수렴한 순수 규칙 시스템(research/operator_flow/minervini/)을 매
-거래일 장 마감 후 실행해 (1) 시장 breadth 레짐 (2) 오늘의 진입 후보를 한 줄씩 append.
+거래일 장 마감 후 실행해 (1) 시장 breadth 레짐 (2) 오늘의 진입 후보를 한 줄씩 upsert.
 미너비니의 최종 조언 — 이론 기대치(TBA)가 아니라 실제 매매 결과(RBA)로 리스크를 설계하려면
 실현 결과 데이터를 축적해야 한다 — 를 실행하는 파이프라인.
 
-출력: /opt/kr-quant/data/minervini_scan.csv (호스트 영속) — rba_tracker.py가 이
-CSV를 직접 읽는 입력이라 계속 유지. 컬럼: date, breadth, regime, n_candidates,
-codes(콤마구분).
-
-**DB 병행 저장:** minervini_scan 테이블(PK: date, 일반 테이블 — 거래일당 1행뿐이라
-하이퍼테이블 이점 없음)에도 같은 행을 upsert — daily_bars·earnings 등과 SQL로
-조인 가능하게(README "다른 데이터랑 같이" 목표). CSV는 rba_tracker.py 호환을 위해
-그대로 두고, DB는 추가로만 씀(기존 소비자 안 건드림).
+minervini_scan 테이블(PK: date, 일반 테이블 — 거래일당 1행뿐이라 하이퍼테이블 이점
+없음)에 upsert — daily_bars·earnings 등과 SQL로 조인 가능하게(README "다른 데이터랑
+같이" 목표). rba_tracker.py도 이 테이블을 직접 읽으므로 CSV 출력은 없다.
 
 무인증(DB만), Kiwoom 자격증명 불필요.
 """
 
 from __future__ import annotations
 
-import csv
 import os
 import subprocess
 import sys
 
 import pendulum
 from airflow.decorators import dag, task
-
-OUT = "/opt/kr-quant/data/minervini_scan.csv"
 
 
 def _dsn() -> str:
@@ -50,7 +42,6 @@ def daily_minervini_scan():
 
     @task
     def scan_and_log() -> None:
-        os.makedirs(os.path.dirname(OUT), exist_ok=True)
         # 스캐너 결과를 sentinel 접두 한 줄로 방출 — 후보 0(약세 레짐)일 때 빈 codes로도
         # 안전하게 파싱된다. 위치 기반 4줄 파싱은 빈 줄이 필터링돼 IndexError를 냈었다.
         code = (
@@ -69,21 +60,11 @@ def daily_minervini_scan():
         _, asof, breadth_s, n_s, codes = result.split("\t", 4)
         breadth, n = float(breadth_s), int(n_s)
         regime = "risk_on" if breadth > 0.5 else "risk_off"
-        done = set()
-        if os.path.exists(OUT):
-            for row in csv.reader(open(OUT)):
-                if row:
-                    done.add(row[0])
-        if asof in done:
-            print(f"{asof} already logged")
-            return
-        with open(OUT, "a", newline="") as f:
-            csv.writer(f).writerow([asof, breadth, regime, n, codes])
 
         sys.path.insert(0, "/opt/kr-quant/src")
         from kr_quant.storage import connect, upsert_minervini_scan
         db_con = connect(_dsn())
-        upsert_minervini_scan(db_con, [(asof, breadth, regime, n, codes)])
+        upsert_minervini_scan(db_con, [(asof, breadth, regime, n, codes)])  # PK(date) upsert — 재실행해도 안전
         db_con.close()
 
         print(f"{asof}: breadth={breadth:.0%} {regime} cand={n}")

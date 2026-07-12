@@ -25,6 +25,11 @@ earnings_backfill``로 즉시 수동 실행도 가능.
 다음 실행이 자동으로 이어받는다 — 별도의 "resume" 플래그가 필요 없다. 즉 이 DAG는
 수렴할 때까지 반복 트리거해도 안전(idempotent)하다.
 
+**retries=2 (30분 간격) 이유:** corp_map 부트스트랩(load_corp_map_with_rotation)이
+일시적 네트워크 오류로 실패하면 재시도로 복구된다. 반면 실제 원인이 일한도(020)
+소진이면 재시도해도 다시 실패할 뿐이지만 손해는 없다(어차피 다음날 18:00 스케줄이
+이어받음) — 두 경우를 구분해 특수 처리하기보다 재시도 자체를 안전하게 둔다.
+
 DART 키는 Airflow의 Fernet 암호화 Variables에만 있고(컨테이너 평문 env 아님),
 수집 subprocess에만 주입한다 — Kiwoom 자격증명과 동일 패턴(daily_collection),
 weekly_earnings와 동일 패턴.
@@ -35,6 +40,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+
+from datetime import timedelta
 
 import pendulum
 from airflow.decorators import dag, task
@@ -72,7 +79,7 @@ def _dart_env() -> dict[str, str]:
 )
 def earnings_backfill():
 
-    @task
+    @task(retries=2, retry_delay=timedelta(minutes=30))
     def collect_earnings_backfill() -> None:
         cmd = [
             sys.executable, "-m", "kr_quant.collectors.dart_earnings",

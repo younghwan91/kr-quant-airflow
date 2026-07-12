@@ -164,6 +164,18 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     PRIMARY KEY (code)
 );
 
+-- 일반 테이블: RBA 축적은 스캐너 픽 건수 기준이라 소규모, 하이퍼테이블 이점 없음.
+CREATE TABLE IF NOT EXISTS minervini_rba (
+    pick_date TEXT NOT NULL,  -- 스캐너가 진입후보로 뽑은 날짜
+    code      TEXT NOT NULL,
+    entry     REAL,
+    exit_px   REAL,
+    outcome   TEXT,   -- 'stop' / 'target_2R' / 'open'(20일 경과, 미확정 종료)
+    ret_pct   REAL,
+    days      INTEGER,
+    PRIMARY KEY (pick_date, code)
+);
+
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds
 -- up the long-range scans backtest/screener code does.
