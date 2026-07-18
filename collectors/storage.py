@@ -256,16 +256,17 @@ def _upsert(
     if not records:
         return 0
     if _is_pg(con):
-        placeholders = ",".join(["%s"] * len(cols))
+        import psycopg2.extras  # noqa: PLC0415 — optional dep, only needed for this path
+
         update_cols = [c for c in cols if c not in pk_cols]
         set_clause = ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
         sql = (
-            f"INSERT INTO {table}({','.join(cols)}) VALUES({placeholders}) "
+            f"INSERT INTO {table}({','.join(cols)}) VALUES %s "
             f"ON CONFLICT ({','.join(pk_cols)}) DO UPDATE SET {set_clause}"
         )
         try:
             with con.cursor() as cur:
-                cur.executemany(sql, records)
+                psycopg2.extras.execute_values(cur, sql, records)
         except Exception:
             # A failed statement leaves the whole Postgres transaction aborted
             # until rolled back — without this, every later upsert on this

@@ -6,7 +6,7 @@ kr-quant/tests/test_storage.py alongside kr_quant/storage.py's read half.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from collectors.storage import (
     DAILY_BAR_COLUMNS,
@@ -58,16 +58,27 @@ def test_upsert_is_idempotent(tmp_path):
 
 
 def test_upsert_uses_on_conflict_for_postgres_connection():
-    """Non-sqlite connections get ON CONFLICT DO UPDATE, not INSERT OR REPLACE."""
+    """Non-sqlite connections get ON CONFLICT DO UPDATE via execute_values, not INSERT OR REPLACE.
+
+    execute_values itself is psycopg2's own (already well-tested) code, so it's
+    patched out here — this test only needs to prove _upsert builds the right
+    ON CONFLICT SQL and passes the records through.
+    """
     fake_con = MagicMock()
     fake_cursor = MagicMock()
     fake_con.cursor.return_value.__enter__.return_value = fake_cursor
+    records = [("005930", "20260706", 100)]
 
-    n = _upsert(fake_con, "daily_bars", ["code", "date", "close"], [("005930", "20260706", 100)])
+    with patch("psycopg2.extras.execute_values") as execute_values:
+        n = _upsert(fake_con, "daily_bars", ["code", "date", "close"], records)
 
     assert n == 1
-    sql = fake_cursor.executemany.call_args[0][0]
+    execute_values.assert_called_once()
+    call_args = execute_values.call_args[0]
+    assert call_args[0] is fake_cursor
+    sql = call_args[1]
     assert "ON CONFLICT (code,date) DO UPDATE SET close=EXCLUDED.close" in sql
+    assert call_args[2] == records
     fake_con.commit.assert_called_once()
 
 
