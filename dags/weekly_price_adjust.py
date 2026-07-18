@@ -31,6 +31,8 @@ from __future__ import annotations
 import os
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -49,7 +51,7 @@ from _common import run_collector, timescale_dsn
 )
 def weekly_price_adjust():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def rebuild_adjusted() -> None:
         run_collector(
             [

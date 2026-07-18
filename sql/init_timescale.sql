@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS supply_demand (
     etc_corp     INTEGER,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('supply_demand', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('supply_demand', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
 CREATE TABLE IF NOT EXISTS short_selling (
     code            TEXT NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS short_selling (
     short_value     BIGINT,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('short_selling', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('short_selling', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
 CREATE TABLE IF NOT EXISTS credit_balance (
     code        TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS credit_balance (
     credit_rt   REAL,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('credit_balance', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('credit_balance', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
 CREATE TABLE IF NOT EXISTS sector_index (
     code        TEXT NOT NULL,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS sector_index (
     trade_value BIGINT,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('sector_index', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('sector_index', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 
 CREATE TABLE IF NOT EXISTS shares_outstanding_history (
     code               TEXT NOT NULL,
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
     shares_outstanding BIGINT,  -- INTEGER(32bit, max~21억)로는 삼성전자 등 대형주 발행주식수(수십억주)가 오버플로우함
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);
 
 -- 일반 테이블(하이퍼테이블 아님): 자연키가 (code, period)라 avail_date를 PK에
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS consensus (
     est_year     TEXT,
     PRIMARY KEY (code, date)
 );
-SELECT create_hypertable('consensus', 'date', if_not_exists => TRUE);
+SELECT create_hypertable('consensus', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_consensus_date ON consensus(date);
 
 -- 일반 테이블: 거래일당 1행뿐이라(연 ~250행) 하이퍼테이블/압축 이점이 없음.

@@ -34,7 +34,7 @@ x-airflow-common: &airflow-common
     # 콜렉터는 이제 자체 보유(./collectors) — 이 마운트는 daily_minervini_scan.py의
     # scanner_final.py, weekly_price_adjust.py의 kr_quant.price_adjust 등
     # analysis 코드 2건 실행에만 남아 있음(README/Dockerfile 참고).
-    - ../kr-quant:/opt/kr-quant
+    - ../kr-quant:/opt/kr-quant:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     airflow-meta-db:

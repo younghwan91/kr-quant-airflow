@@ -23,6 +23,8 @@ import os
 import subprocess
 import sys
 
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -39,7 +41,7 @@ from _common import run_collector, timescale_dsn
 )
 def daily_minervini_scan():
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def scan_and_log() -> None:
         # 스캐너 결과를 sentinel 접두 한 줄로 방출 — 후보 0(약세 레짐)일 때 빈 codes로도
         # 안전하게 파싱된다. 위치 기반 4줄 파싱은 빈 줄이 필터링돼 IndexError를 냈었다.
@@ -73,7 +75,7 @@ def daily_minervini_scan():
 
         print(f"{asof}: breadth={breadth:.0%} {regime} cand={n}")
 
-    @task
+    @task(retries=1, retry_delay=timedelta(minutes=10))
     def track_rba() -> None:
         """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언).
 

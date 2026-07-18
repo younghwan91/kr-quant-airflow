@@ -14,10 +14,11 @@ files. Centralized here instead.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 
 from airflow.models import Variable
+
+from collectors.config import mask_dsn
 
 
 def timescale_dsn() -> str:
@@ -50,9 +51,6 @@ def dart_env() -> dict[str, str]:
 
 _SECRET_OPTS = ("--db", "--dsn")
 
-# postgresql://user:PASSWORD@host/db 형태에서 비밀번호만 잡아낸다.
-_DSN_RE = re.compile(r"(?P<head>[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\s]+:)(?P<pw>[^@/\s]+)(?P<tail>@)")
-
 
 def _redact(text: str) -> str:
     """문자열 안의 DSN 비밀번호를 가린다.
@@ -61,9 +59,10 @@ def _redact(text: str) -> str:
     찍는다(supply_demand, daily_bars, short_credit, listed_shares, sector_index,
     combined). 커맨드라인만 마스킹해도 콜렉터 stdout을 로그로 흘리는 순간
     비밀번호가 그대로 남으므로, 스트리밍 길목에서 한 번 더 거른다 — 콜렉터를
-    새로 추가해도 자동으로 보호된다.
+    새로 추가해도 자동으로 보호된다. ``collectors.config.mask_dsn``과 동일한
+    정규식을 쓰므로(단일 소스), 여기서는 그 함수를 그대로 재사용한다.
     """
-    return _DSN_RE.sub(lambda m: f"{m['head']}***{m['tail']}", text)
+    return mask_dsn(text)
 
 
 def _masked(cmd: list[str]) -> str:
