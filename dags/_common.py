@@ -15,10 +15,18 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
 from airflow.models import Variable
 
-from collectors.config import mask_dsn
+# collectors/는 /opt/airflow 밑에 있지만, Airflow는 DAG 파싱 시 각 dag 파일
+# 자신의 디렉터리(dags/)만 sys.path에 넣는다 — /opt/airflow 자체는 자동으로
+# 안 잡힌다. 그래서 task 본문에서는 다들 sys.path.insert(0, "/opt/airflow")를
+# 직접 해왔다(예: daily_minervini_scan.py). 여기서는 모듈 로드 시점(=DAG 파싱
+# 시점)에 필요하므로 import 전에 미리 넣는다.
+sys.path.insert(0, "/opt/airflow")
+
+from collectors.config import mask_dsn  # noqa: E402
 
 
 def timescale_dsn() -> str:
