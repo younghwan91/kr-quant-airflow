@@ -25,7 +25,7 @@ import time
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api
+from .config import make_api, mask_dsn
 from .storage import (
     connect,
     default_db_path,
@@ -169,7 +169,7 @@ def main() -> int:
     upsert_stocks(con, stocks)
     server = "모의" if not args.prod else "실서버"
     print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개 | 최근 {args.days}일")
-    print(f"💾 {args.db}\n")
+    print(f"💾 {mask_dsn(args.db)}\n")
 
     stats = collect(api, con, stocks, days=args.days, resume=args.resume)
 

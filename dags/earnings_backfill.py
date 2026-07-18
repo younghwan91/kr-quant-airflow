@@ -9,16 +9,26 @@ daily_bars 전 종목(~2,600개)을, ``--from-year 2016``부터(주1) 전체 이
 (주1) 2016년은 EARNINGS_PIPELINE_PLAN.md 핸드오프 문서의 권장치이며 아직 사용자
 확인은 안 된 기본값이다 — 필요 시 조정할 것.
 
-**매일 자동 스케줄(18:00 KST, daily_consensus와 동시) 이유:** 전 종목 × 전체
-이력(~114k콜, 2016~)은 하루 한도(2키 기준 4만콜)로 며칠에 걸쳐야 끝난다.
-(code, period) DB resume 덕에 매일 자동으로 다시 돌려도 위험하지 않다 —
-이미 채운 조합은 스킵하고 남은 것만 이어받으며, 한도(020) 도달 시 그냥
-조용히 끝난다(에러 아님). 전종목 백필이 끝난 뒤로는 이 DAG가 사실상
-no-op(전부 스킵)이 되므로 계속 켜둬도 무해하다. ``daily_consensus``(네이버,
-무인증)는 DART API를 전혀 쓰지 않아 같은 시각(18:00)에 돌아도 자원 경합이
-없다 — 반면 ``daily_earnings``(16:00)는 이 DAG와 같은 DART 키/일한도를
-공유하므로 2시간 간격을 둬 분리했다. 필요하면 ``airflow dags trigger
-earnings_backfill``로 즉시 수동 실행도 가능.
+**월 1회(매월 1일 10:00 KST)로 내린 이유 — "수렴 후 no-op"은 사실이 아니었다:**
+과거 이 DAG는 평일 매일 18:00에 돌았고, 근거는 "백필이 끝나면 전부 스킵되는
+no-op이라 계속 켜둬도 무해하다"였다. 2026-07-17 실측 결과 그 전제가 틀렸다.
+
+- 이력은 이미 수렴했다: 2016~2025년 종목당 4분기가 모두 차 있고 2026년은 Q1만
+  존재한다(반기보고서 공시 전이므로 정상). 즉 받을 게 없다.
+- 그런데도 매 실행이 3시간 35분 걸렸고 `earnings` 테이블 쓰기는 사실상 없었다.
+  ``pending`` 계산이 **현재 상장 종목 전체**에서 DB에 있는 (code, period)만 빼기
+  때문이다 — 2016년에 상장도 안 했던 ~947개 종목은 "아직 안 채운 조합"으로 남아
+  매 실행마다 영원히 재조회된다. 채워질 수 없으므로 수렴하지 않는다.
+- 진짜 비용은 DART 호출이 아니라 **머신 가동시간**이었다. ``wait_and_stop.sh``가
+  스택을 내리기 전 이 DAG가 21:35까지 붙잡고 있어 TimescaleDB/스케줄러/웹서버가
+  매일 4시간 이상 더 떠 있었다.
+- 게다가 ``wait_and_stop.sh``의 대기 목록에 이 DAG가 없어 22:00 안전장치에
+  ``docker compose stop``으로 런이 통째로 잘렸다(2026-07-16 런이 1235분으로
+  기록된 원인).
+
+신규 상장 종목의 과거 이력은 여전히 누군가 채워야 하므로 삭제하지 않고 월 1회만
+남긴다. 일상적인 최신 분기 반영은 ``daily_earnings``(평일 16:00, ``--recent-quarters 2``)가
+담당한다. 즉시 필요하면 ``airflow dags trigger earnings_backfill``로 수동 실행.
 
 **재실행 안전(resume) 이유:** ``--db-table`` 모드는 ``earnings`` 테이블에 이미 있는
 (code, period) 조합을 건너뛰므로, DART 일한도(status 020, 전 키 소진)로 중단되어도
@@ -37,7 +47,6 @@ weekly_earnings와 동일 패턴.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
 from datetime import timedelta
@@ -45,14 +54,18 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import dart_env, timescale_dsn
+from _common import dart_env, run_collector, timescale_dsn
 
 FROM_YEAR = "2016"  # EARNINGS_PIPELINE_PLAN.md 권장치 — 사용자 확인 필요한 기본값
 
 
 @dag(
     dag_id="earnings_backfill",
-    schedule="0 18 * * 1-5",  # 평일 18:00 KST — daily_consensus와 동시(자원 경합 없음), daily_earnings(16:00)와는 2시간 분리
+    # 매주 일요일 10:00 KST — 스택 기동(cron 10:00) 직후, 장이 안 서는 날이라
+    # 다른 수집과 경합하지 않는다. --multi-batch 적용 후 전 종목 전 이력 재확인이
+    # 2분 24초로 끝나므로(과거 215분) 주 1회로 돌려 신규 상장 종목의 과거 이력을
+    # 일주일 안에 따라잡는다. 폐지된 weekly_earnings(일요일)의 자리를 대신한다.
+    schedule="0 10 * * 0",
     start_date=pendulum.datetime(2026, 7, 12, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
@@ -62,14 +75,18 @@ def earnings_backfill():
 
     @task(retries=2, retry_delay=timedelta(minutes=30))
     def collect_earnings_backfill() -> None:
-        cmd = [
-            sys.executable, "-m", "collectors.dart_earnings",
-            "--db-table", "--all-codes", "--from-year", FROM_YEAR,
-            "--db", timescale_dsn(),
-        ]
-        # DSN(비밀번호 포함)을 로그에 남기지 않도록 --db 인자는 마스킹해서 출력
-        print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/airflow", env=dart_env())
+        run_collector(
+            [
+                sys.executable, "-m", "collectors.dart_earnings",
+                # --multi-batch: fnlttMultiAcnt로 100종목씩 묶어 조회한다. 없으면
+                # 종목별 fnlttSinglAcnt 루프로 떨어져 전 종목×전 분기가 ~21,000콜/
+                # 215분이 된다(실측). 콜렉터엔 2026-07-12부터 있었으나 DAG가 플래그를
+                # 안 넘겨 계속 느린 경로를 타고 있었다.
+                "--db-table", "--multi-batch", "--all-codes", "--from-year", FROM_YEAR,
+                "--db", timescale_dsn(),
+            ],
+            env=dart_env(),
+        )
         print("earnings 전체 이력 백필 실행 완료 (DB upsert, DART 일한도 도달 시 다음 트리거에서 자동 재개)")
 
     collect_earnings_backfill()

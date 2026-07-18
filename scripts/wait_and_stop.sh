@@ -1,26 +1,75 @@
 #!/usr/bin/env bash
-# Waits for today's scheduled DAG runs (daily_collection, daily_short_credit)
-# to reach a terminal state, then stops the stack. Replaces the old fixed
-# 22:00 KST `docker compose stop` cron entry so the server doesn't sit up
-# for hours after collection already finished. Keeps 22:00 KST as a
-# fallback deadline in case a run hangs, so behavior never regresses past
-# the old fixed-time shutdown.
+# 오늘 돌아야 할 DAG가 전부 끝나면 스택을 내린다 — 수집이 끝났는데 서버가
+# 몇 시간씩 떠 있지 않도록 기존 22:00 고정 종료 cron을 대체한 스크립트다.
+# 런이 걸려서 안 끝나는 경우를 대비해 22:00 KST 안전장치는 유지한다.
+#
+# **대기 대상을 Airflow에게 직접 묻는 이유(2026-07-17 재작성):**
+# 이전 버전은 대기할 DAG를 셸 배열에 하드코딩했다(daily_collection_catchup,
+# daily_collection, daily_short_credit, weekly_listed_shares). 그런데
+# `is_done()`은 "오늘 런이 없으면 아직 안 끝난 것"으로 판정했고,
+# daily_collection_catchup은 paused여서 런을 영원히 만들지 않았다. 결과적으로
+# 루프가 절대 완료되지 못하고 **매일 22:00 안전장치로만 종료**됐다 — 이 스크립트가
+# 대체하려던 바로 그 고정 종료로 조용히 되돌아가 있었다(실측: 수집이 17:10에
+# 끝난 날도 종료는 22:00:47).
+#
+# 하드코딩 목록은 DAG를 pause/unpause하거나 추가할 때마다 이 파일과 어긋난다.
+# 그래서 "오늘 더 뜰 런이 있는가 / 지금 도는 런이 있는가"를 Airflow 메타DB에
+# 직접 묻는다. paused DAG는 자동으로 빠지고, 새 DAG·월간 DAG도 그대로 반영된다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 POLL_INTERVAL=60
 DEADLINE=$(date -d "22:00" +%s)
 
-today_dow=$(date +%u)  # 1=Mon .. 7=Sun
 today=$(date +%Y-%m-%d)
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
-# Per-stock tables have their own day-window caps (supply_demand/credit/short
-# ~100d, sector_index ~10d) so they never backfill to 2024 like daily_bars
-# does — this just reports how many known stocks are missing *today's* row
-# in each table, so a repeat of the 2026-07-08 transaction-cascade failure
-# (473 stocks silently dropped) shows up in the log instead of going unnoticed.
+meta_user=$(grep '^AIRFLOW_META_USER' .env | cut -d= -f2)
+meta_db=$(grep '^AIRFLOW_META_DB' .env | cut -d= -f2)
+
+# 실패 시 빈 문자열 → 호출부에서 "판단 불가"로 보고 계속 대기(안전장치까지).
+# 조회가 안 된다고 스택을 내려버리면 수집 중인 런이 잘리므로, 모르면 기다린다.
+meta_q() {
+    docker compose exec -T airflow-meta-db \
+        psql -U "$meta_user" -d "$meta_db" -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+# 지금 돌고 있거나 큐에 있는 런 수. 0이어야 아무것도 안 자르고 내릴 수 있다.
+running_runs() {
+    meta_q "SELECT count(*) FROM dag_run WHERE state IN ('running','queued');"
+}
+
+# 오늘 안에 더 생성될 런이 있는 unpaused DAG 수. next_dagrun_create_after가
+# 오늘 자정(KST) 이전이면 아직 오늘 할 일이 남았다는 뜻. schedule=None(수동)
+# DAG는 next_dagrun_create_after가 NULL이라 자동 제외된다.
+pending_dags() {
+    meta_q "
+SELECT count(*) FROM dag
+ WHERE NOT is_paused
+   AND is_active
+   AND next_dagrun_create_after IS NOT NULL
+   AND next_dagrun_create_after
+       < (date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') + interval '1 day')
+         AT TIME ZONE 'Asia/Seoul';"
+}
+
+# 아직 안 끝난 DAG 이름 — 로그용.
+pending_names() {
+    meta_q "
+SELECT string_agg(dag_id, ',') FROM dag
+ WHERE NOT is_paused
+   AND is_active
+   AND next_dagrun_create_after IS NOT NULL
+   AND next_dagrun_create_after
+       < (date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') + interval '1 day')
+         AT TIME ZONE 'Asia/Seoul';"
+}
+
+# 종목별 테이블은 자체 일수 상한이 있어(supply_demand/credit/short ~100d,
+# sector_index ~10d) daily_bars처럼 2024년까지 백필되지 않는다 — 여기서는 각
+# 테이블에 *오늘* 행이 없는 종목이 몇 개인지만 보고해서, 2026-07-08의
+# 트랜잭션 연쇄 실패(473종목 조용히 누락) 같은 게 로그에 남게 한다.
 report_coverage() {
     local user db
     user=$(grep '^TIMESCALE_USER' .env | cut -d= -f2)
@@ -47,24 +96,6 @@ SELECT 'shares_outstanding', COUNT(*) FROM stocks s
 " 2>&1 || log "커버리지 점검 실패 (DB 연결 안 됨?)"
 }
 
-pending=()
-# schedule="5 10 * * *" in daily_collection_catchup.py — runs every day
-pending+=("daily_collection_catchup")
-# schedule="0 16 * * 1-5" in daily_collection.py
-if [ "$today_dow" -le 5 ]; then
-    pending+=("daily_collection")
-fi
-# schedule="0 10 * * 2-6" in daily_short_credit.py
-if [ "$today_dow" -ge 2 ] && [ "$today_dow" -le 6 ]; then
-    pending+=("daily_short_credit")
-fi
-# schedule="10 10 * * 1" in weekly_listed_shares.py
-if [ "$today_dow" -eq 1 ]; then
-    pending+=("weekly_listed_shares")
-fi
-
-log "대기 대상 DAG: ${pending[*]}"
-
 shutdown() {
     report_coverage
     log "$1"
@@ -72,44 +103,24 @@ shutdown() {
     exit 0
 }
 
-is_done() {
-    local dag_id="$1"
-    docker compose exec -T airflow-scheduler airflow dags list-runs -d "$dag_id" --output json 2>/dev/null \
-        | python3 -c "
-import json, sys
-today = '$today'
-try:
-    runs = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-todays = [
-    r for r in runs
-    if str(r.get('logical_date', r.get('execution_date', ''))).startswith(today)
-    or str(r.get('start_date', '')).startswith(today)
-]
-if not todays:
-    sys.exit(1)
-sys.exit(0 if todays[0].get('state') in ('success', 'failed') else 1)
-"
-}
+log "대기 시작 — 오늘 예정된 unpaused DAG가 모두 끝나면 종료"
 
 while :; do
-    remaining=("${pending[@]}")
-    pending=()
-    for dag_id in "${remaining[@]}"; do
-        if is_done "$dag_id"; then
-            log "$dag_id 완료"
-        else
-            pending+=("$dag_id")
-        fi
-    done
+    running=$(running_runs)
+    pending=$(pending_dags)
 
-    if [ ${#pending[@]} -eq 0 ]; then
-        shutdown "모든 DAG 완료 — 컨테이너 종료"
+    if [ -n "$running" ] && [ -n "$pending" ]; then
+        if [ "$running" -eq 0 ] && [ "$pending" -eq 0 ]; then
+            shutdown "오늘 예정 DAG 모두 완료 — 컨테이너 종료"
+        fi
+        log "진행 중 런=$running, 오늘 남은 DAG=$pending ($(pending_names))"
+    else
+        # 메타DB 조회 실패(기동 중 등) — 모르면 기다린다.
+        log "메타DB 조회 불가 — 재시도"
     fi
 
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-        shutdown "22:00 안전장치 도달, 미완료(${pending[*]})인 채로 종료"
+        shutdown "22:00 안전장치 도달 — 미완료인 채로 종료"
     fi
 
     sleep "$POLL_INTERVAL"

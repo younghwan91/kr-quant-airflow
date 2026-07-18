@@ -39,7 +39,7 @@ import time
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api
+from .config import make_api, mask_dsn
 from .storage import connect, default_db_path, to_int, upsert_shares_outstanding, upsert_stocks
 from .supply_demand import fetch_stock_list, is_common_stock
 
@@ -110,7 +110,7 @@ def main() -> int:
     upsert_stocks(con, stocks)
     server = "모의" if not args.prod else "실서버"
     print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개")
-    print(f"💾 {args.db}\n")
+    print(f"💾 {mask_dsn(args.db)}\n")
 
     stats = collect(api, con, stocks)
 

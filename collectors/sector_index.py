@@ -19,7 +19,7 @@ import time
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api
+from .config import make_api, mask_dsn
 from .storage import connect, default_db_path, to_int, upsert_sector_index
 
 # ka20006 response: list key for daily bars.
@@ -117,7 +117,7 @@ def main() -> int:
     server = "모의" if not args.prod else "실서버"
     window = "전체" if args.days == 0 else f"최근 {args.days}일"
     print(f"🔌 {server} | 업종 {len(sectors)}개 | {window}")
-    print(f"💾 {args.db}\n")
+    print(f"💾 {mask_dsn(args.db)}\n")
 
     stats = collect(api, con, sectors, days=args.days)
 

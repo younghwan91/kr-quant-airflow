@@ -7,6 +7,7 @@ repo root (never committed). Nothing here hardcodes secrets.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from kiwoom_rest_api import KiwoomAPI
@@ -59,3 +60,16 @@ def make_api(is_mock: bool = True, *, login: bool = True, **kwargs) -> KiwoomAPI
     if login:
         api.login()
     return api
+
+
+_DSN_RE = re.compile(r"(?P<head>[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\s]+:)(?P<pw>[^@/\s]+)(?P<tail>@)")
+
+
+def mask_dsn(dsn: str | None) -> str:
+    """DSN의 비밀번호를 가린 표시용 문자열.
+
+    콜렉터들이 시작 시 접속 대상을 `💾 {args.db}`로 찍는데, 그대로 두면
+    비밀번호가 stdout에 남는다 — Airflow 태스크 로그로 흘러들어가고(2026-07-17
+    실측), 터미널 스크롤백/CI 로그에도 남는다.
+    """
+    return _DSN_RE.sub(lambda m: f"{m['head']}***{m['tail']}", str(dsn or ""))

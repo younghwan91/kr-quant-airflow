@@ -29,18 +29,19 @@ in-process import하므로 kr-quant에 계속 남아 있다 — 콜렉터 이전
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import timescale_dsn
+from _common import run_collector, timescale_dsn
 
 
 @dag(
     dag_id="weekly_price_adjust",
-    schedule="0 5 * * 6",  # 토요일 05:00 KST — 장 마감 데이터 다 들어온 뒤, 한가한 시간대
+    # 토요일 10:05 KST — 스택 기동(cron 0 10 * * *) 직후. 기존 05:00은 머신이
+    # 꺼져 있는 시간이라(스택 가동 창 10:00~) 제 시각에 돌 수 없었다.
+    schedule="5 10 * * 6",
     start_date=pendulum.datetime(2026, 7, 12, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
@@ -50,14 +51,15 @@ def weekly_price_adjust():
 
     @task
     def rebuild_adjusted() -> None:
-        cmd = [
-            sys.executable, "-m", "kr_quant.price_adjust",
-            "--rebuild-db", "--db", timescale_dsn(),
-        ]
-        print(f"$ {' '.join(cmd[:-2])} --db ***")
-        # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
-        env = {**os.environ, "PYTHONPATH": "/opt/kr-quant/src"}
-        subprocess.run(cmd, check=True, cwd="/opt/kr-quant", env=env)
+        run_collector(
+            [
+                sys.executable, "-m", "kr_quant.price_adjust",
+                "--rebuild-db", "--db", timescale_dsn(),
+            ],
+            # editable install 없이 kr_quant 패키지를 찾도록 PYTHONPATH 주입 (src/ 레이아웃)
+            env={**os.environ, "PYTHONPATH": "/opt/kr-quant/src"},
+            cwd="/opt/kr-quant",
+        )
 
     rebuild_adjusted()
 

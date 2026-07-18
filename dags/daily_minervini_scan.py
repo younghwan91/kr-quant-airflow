@@ -19,13 +19,14 @@ I/O라 kr-quant-airflow/collectors/로 이전됨.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import timescale_dsn
+from _common import run_collector, timescale_dsn
 
 
 @dag(
@@ -45,12 +46,17 @@ def daily_minervini_scan():
         code = (
             "import os,psycopg2,sys;sys.path.insert(0,'/opt/kr-quant/research/operator_flow/minervini');"
             "from scanner_final import scan;"
-            f"con=psycopg2.connect('{timescale_dsn()}');"
+            # DSN은 env로 넘긴다 — 코드 문자열에 박으면 `python -c '<DSN 포함>'`이
+            # 프로세스 argv(ps)와 예외 메시지에 비밀번호째로 노출된다.
+            "con=psycopg2.connect(os.environ['TS_DSN']);"
             "a,b,c=scan(con);con.close();"
             "codes=','.join(c['code'].tolist()) if len(c) else '';"
             "print('RESULT\\t%s\\t%s\\t%d\\t%s'%(a,round(float(b),4),len(c),codes))"
         )
+        # 여기만 run_collector를 안 쓴다 — stdout의 RESULT 라인을 파싱해야 해서
+        # 스트리밍이 아니라 capture_output이 필요하다.
         r = subprocess.run([sys.executable, "-c", code], cwd="/opt/kr-quant",
+                           env={**os.environ, "TS_DSN": timescale_dsn()},
                            capture_output=True, text=True, check=True)
         result = next((x for x in r.stdout.splitlines() if x.startswith("RESULT\t")), None)
         if result is None:
@@ -69,9 +75,18 @@ def daily_minervini_scan():
 
     @task
     def track_rba() -> None:
-        """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언)."""
-        subprocess.run([sys.executable, "-m", "collectors.rba_tracker",
-            "--db", timescale_dsn()], cwd="/opt/airflow", check=False)
+        """전일까지 픽의 실현결과를 RBA 로그에 누적 (미너비니 조언).
+
+        **check=False였던 것을 되돌린 이유:** 실패를 통째로 삼켜서 rba_tracker가
+        무슨 이유로든 죽어도 태스크가 초록불이었고, 출력도 캡처되지 않아 로그에
+        아무 흔적이 없었다. ``minervini_rba`` 테이블이 0행인 채로 방치된 원인이다.
+        마지막 태스크라 실패해도 앞선 스캔 결과(upsert 완료)는 보존된다 — 조용히
+        틀리는 것보다 빨갛게 실패하는 편이 낫다.
+        """
+        run_collector([
+            sys.executable, "-m", "collectors.rba_tracker",
+            "--db", timescale_dsn(),
+        ])
 
     scan_and_log() >> track_rba()
 

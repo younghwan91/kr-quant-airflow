@@ -22,11 +22,14 @@ import argparse
 import sqlite3
 import time
 
+from typing import Any
+
 from kiwoom_rest_api import KiwoomAPI
 from kiwoom_rest_api.base import KiwoomAPIError
 
-from .config import make_api
+from .config import make_api, mask_dsn
 from .storage import (
+    _is_pg,
     connect,
     default_db_path,
     to_int,
@@ -39,15 +42,35 @@ from .supply_demand import fetch_stock_list, is_common_stock
 _CHART_KEY = "stk_dt_pole_chart_qry"
 
 
-def _has_any_rows(con: sqlite3.Connection, code: str) -> bool:
-    cur = con.execute("SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,))
-    return cur.fetchone() is not None
+def _fetchone(con: Any, sql: str, params: tuple) -> tuple | None:
+    """sqlite3/psycopg2 양쪽에서 한 행을 읽는다 (``?`` 파라미터로 통일).
+
+    sqlite3는 ``con.execute()``와 ``?``를, psycopg2는 ``con.cursor().execute()``와
+    ``%s``를 쓴다. 이 차이 때문에 ``--update`` 경로가 Postgres에서
+    ``AttributeError: 'connection' object has no attribute 'execute'``로 죽었고,
+    그게 ``daily_collection_catchup``이 paused로 방치돼 있던 원인이다(2026-07-17 실측).
+    """
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql.replace("?", "%s"), params)
+            return cur.fetchone()
+    return con.execute(sql, params).fetchone()
 
 
-def _latest_date(con: sqlite3.Connection, code: str) -> str | None:
+def _has_any_rows(con: Any, code: str) -> bool:
+    return _fetchone(con, "SELECT 1 FROM daily_bars WHERE code=? LIMIT 1", (code,)) is not None
+
+
+def _latest_date(con: Any, code: str) -> str | None:
     """Most recent stored bar date for ``code`` (YYYYMMDD), or None if empty."""
-    cur = con.execute("SELECT MAX(date) FROM daily_bars WHERE code=?", (code,))
-    return cur.fetchone()[0]
+    row = _fetchone(con, "SELECT MAX(date) FROM daily_bars WHERE code=?", (code,))
+    v = row[0] if row else None
+    if v is None:
+        return None
+    # sqlite는 date를 TEXT("20260716")로 보관하지만 Postgres는 date 타입이라
+    # psycopg2가 datetime.date를 돌려준다. 호출부가 market_latest("20260716")와
+    # 부등호 비교하므로 YYYYMMDD 문자열로 맞춘다 — 안 그러면 date vs str TypeError.
+    return v.strftime("%Y%m%d") if hasattr(v, "strftime") else str(v)
 
 
 # Liquid reference stock (삼성전자) used to learn the market's latest bar date.
@@ -230,7 +253,7 @@ def main() -> int:
     server = "모의" if not args.prod else "실서버"
     window = "전체(~2.5년)" if args.days == 0 else f"최근 {args.days}일"
     print(f"🔌 {server} | 시장={args.market} | 종목 {len(stocks)}개 | {window}")
-    print(f"💾 {args.db}\n")
+    print(f"💾 {mask_dsn(args.db)}\n")
 
     stats = collect(
         api, con, stocks, days=args.days, max_pages=args.max_pages,

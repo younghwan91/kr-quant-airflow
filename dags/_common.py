@@ -14,6 +14,7 @@ files. Centralized here instead.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 from airflow.models import Variable
@@ -47,6 +48,78 @@ def dart_env() -> dict[str, str]:
     return env
 
 
-def run_collector(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, cwd="/opt/airflow", env=env)
+_SECRET_OPTS = ("--db", "--dsn")
+
+# postgresql://user:PASSWORD@host/db 형태에서 비밀번호만 잡아낸다.
+_DSN_RE = re.compile(r"(?P<head>[a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\s]+:)(?P<pw>[^@/\s]+)(?P<tail>@)")
+
+
+def _redact(text: str) -> str:
+    """문자열 안의 DSN 비밀번호를 가린다.
+
+    콜렉터 여러 개가 자기 출력으로 ``print(f"💾 {args.db}")``처럼 DSN을 통째로
+    찍는다(supply_demand, daily_bars, short_credit, listed_shares, sector_index,
+    combined). 커맨드라인만 마스킹해도 콜렉터 stdout을 로그로 흘리는 순간
+    비밀번호가 그대로 남으므로, 스트리밍 길목에서 한 번 더 거른다 — 콜렉터를
+    새로 추가해도 자동으로 보호된다.
+    """
+    return _DSN_RE.sub(lambda m: f"{m['head']}***{m['tail']}", text)
+
+
+def _masked(cmd: list[str]) -> str:
+    """``--db <DSN>``처럼 비밀값을 받는 옵션의 값을 가린 커맨드 문자열.
+
+    ``timescale_dsn()``은 비밀번호를 포함하므로 그대로 찍으면 태스크 로그에
+    평문으로 남는다(실측). Fernet Variables로 자격증명을 감춰둔 의미가 없어짐.
+    """
+    out: list[str] = []
+    mask_next = False
+    for arg in cmd:
+        out.append("***" if mask_next else arg)
+        mask_next = arg in _SECRET_OPTS
+    return " ".join(out)
+
+
+def run_collector(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str = "/opt/airflow",
+) -> None:
+    """콜렉터를 실행하고 그 출력을 태스크 로그로 스트리밍한다.
+
+    ``cwd``는 kr-quant 쪽 스크립트를 돌리는 DAG(weekly_price_adjust,
+    daily_minervini_scan)가 ``/opt/kr-quant``를 쓰므로 인자로 받는다.
+
+    ``subprocess.run(cmd)``처럼 stdout을 넘겨주지 않으면 자식은 OS 레벨 fd 1에
+    직접 쓰는데, Airflow의 캡처(``logging_mixin``)는 파이썬 레벨 ``sys.stdout``만
+    가로채므로 콜렉터 출력이 통째로 유실된다 — ``earnings_backfill``이 3.5시간
+    돌고도 로그를 19줄만 남기던 실측 원인. 콜렉터가 심어둔 진행 로그
+    (``[2016Q1] 누적 rows=...`` 등)가 하나도 안 보여 장애 진단이 불가능했다.
+    PIPE로 받아 ``print``로 되찍어야 로그에 들어간다.
+
+    ``check=True``와 동일하게 실패 시 ``CalledProcessError``를 던진다.
+    """
+    print(f"$ {_masked(cmd)}", flush=True)
+    # PYTHONUNBUFFERED: 자식의 stdout이 파이프면 파이썬은 tty와 달리 블록 버퍼링을
+    # 한다 — flush=True를 붙이지 않은 print(콜렉터의 "🔌 실서버 …", "📅 시장 최신
+    # 거래일 …" 등)가 프로세스가 끝날 때까지 버퍼에 갇혀, 정작 진행상황이 필요한
+    # 긴 잡에서 실시간으로 안 보인다. 강제로 라인 버퍼링시킨다.
+    run_env = {**(os.environ if env is None else env), "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=run_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # 실패 원인이 stderr로만 나오는 콜렉터가 있어 합류시킨다
+        text=True,
+        bufsize=1,  # 라인 버퍼 — 긴 잡의 진행상황이 끝날 때 몰아서가 아니라 실시간으로 보인다
+    )
+    with proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(_redact(line.rstrip()), flush=True)
+    if proc.returncode != 0:
+        # 마스킹된 cmd로 던진다 — CalledProcessError.__str__가 cmd를 그대로 찍어
+        # 원본을 넘기면 실패할 때마다 트레이스백에 DSN 비밀번호가 남는다(실측).
+        raise subprocess.CalledProcessError(proc.returncode, _masked(cmd))

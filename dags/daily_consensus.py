@@ -21,7 +21,6 @@ sql/init_timescale.sql에 스키마 추가됨.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
 from datetime import timedelta
@@ -29,7 +28,7 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import timescale_dsn
+from _common import run_collector, timescale_dsn
 
 
 @dag(
@@ -44,12 +43,10 @@ def daily_consensus():
 
     @task(retries=1, retry_delay=timedelta(minutes=10))
     def collect_consensus() -> None:
-        cmd = [
+        run_collector([
             sys.executable, "-m", "collectors.naver_consensus",
             "--db-table", "--all-codes", "--db", timescale_dsn(),
-        ]
-        print(f"$ {' '.join(cmd[:-2])} --db ***")
-        subprocess.run(cmd, check=True, cwd="/opt/airflow")
+        ])
 
     collect_consensus()
 
