@@ -37,30 +37,41 @@ Airflow 웹서버: http://<spare-pc-ip>:8080
 
 ## DAG 목록
 
+스케줄은 모두 스택 가동 창(cron이 10:00 기동, `wait_and_stop.sh`가 그날 DAG 종료 후 종료) 안에 둔다.
+
+**매일/평일 (증분):**
+
 | DAG | 스케줄(KST) | 수집 대상 |
 |---|---|---|
 | `daily_collection` | 평일 16:00 | 일봉+수급(키움) + 업종지수 |
 | `daily_collection_catchup` | 매일 10:05 | 전날 실패분만 값싸게 재수집 |
-| `daily_short_credit` | 화~토 10:00 | 신용잔고(키움, T+1~2 지연 고려) |
-| `daily_earnings` | 평일 16:00 | DART 실적 증분(당기+전분기) |
-| `earnings_backfill` | 평일 18:00 | DART 실적 전체 이력 백필(resume 가능) |
+| `daily_short_credit` | 화~토 10:00 | 공매도+신용잔고(키움, T+1~2 지연 고려) |
+| `daily_earnings` | 평일 16:00 | DART 실적 증분(당기+전분기, `--multi-batch`) |
 | `daily_consensus` | 평일 18:00 | 네이버 애널리스트 컨센서스 |
 | `daily_krx_shares` | 평일 18:30 | KRX 일별 상장주식수(point-in-time) |
 | `daily_minervini_scan` | 평일 18:40 | 미너비니 스캐너 픽 + RBA 실현결과 축적 |
+
+**주간 (백필/스냅샷):**
+
+| DAG | 스케줄(KST) | 수집 대상 |
+|---|---|---|
+| `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(`--multi-batch`, resume) |
+| `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집(신규 상장·구멍 자동 보정) |
 | `weekly_listed_shares` | 월 10:10 | 키움 상장주식수 스냅샷 |
-| `weekly_price_adjust` | 토 05:00 | daily_bars_adjusted(액면분할 백조정) 재생성 |
-| `weekly_delisted_stocks` | 토 05:10 | KRX 상장폐지종목(생존편향 보정) |
-| `weekly_earnings` | 일 18:00 | DART 실적 top-500 CSV 재생성(레거시 경로) |
+| `weekly_price_adjust` | 토 10:05 | daily_bars_adjusted(액면분할 백조정) 재생성 |
+| `weekly_delisted_stocks` | 토 10:15 | KRX 상장폐지종목(생존편향 보정) |
+
+데이터는 **매일 증분 + 주간 깊이 재수집**의 2단 구조다. 시세·수급은 `daily_collection`이 증분을, `combined --update`가 전체 이력을 유지한다. 업종지수·공매도·신용잔고는 평일 DAG가 증분을, `weekly_history_backfill`이 깊이를 유지해 신규 상장 종목·새 지수·DB 리셋 후에도 히스토리가 비지 않는다(콜렉터가 `(code, date)` upsert라 idempotent). 단 신용잔고는 키움 API가 100 거래일까지만 제공한다.
 
 모든 외부 API 호출 DAG는 `retries=1, retry_delay=10분`(백필은 `retries=2, 30분`) — 일시적 네트워크 오류로 그날 데이터가 조용히 빠지는 것을 방지.
 
 ## 구조
 
-- `dags/*.py` — 위 12개 DAG, 대부분 `python -m collectors.X`를 subprocess로 호출
-- `dags/_common.py` — `timescale_dsn()`/`kiwoom_env()`/`dart_env()`/`run_collector()` 공유 헬퍼(DAG마다 복붙하지 않도록)
+- `dags/*.py` — 위 12개 DAG, `run_collector()`로 `python -m collectors.X`를 실행
+- `dags/_common.py` — `timescale_dsn()`/`kiwoom_env()`/`dart_env()`/`run_collector()` 공유 헬퍼(DAG마다 복붙하지 않도록). `run_collector()`는 콜렉터 stdout을 태스크 로그로 스트리밍하고 DSN 비밀번호를 마스킹한다
 - `collectors/` — 데이터 수집 로직 자체 보유(DART/키움/KRX/네이버), `dags/`·`scripts/`처럼 바인드마운트되는 디렉토리. `collectors/storage.py`가 스키마+upsert 전체를 가짐
 - `scripts/sync_to_timescale.py` — sqlite → TimescaleDB 증분 upsert(레거시 경로, 대부분의 DAG는 이제 TimescaleDB에 직접 씀)
-- `scripts/wait_and_stop.sh` — 오늘 예약된 DAG가 전부 끝날 때까지 대기 후 컨테이너 안전 종료(22:00 안전장치 포함)
+- `scripts/wait_and_stop.sh` — Airflow 메타DB에 "오늘 남은 unpaused DAG / 실행 중 런"을 질의해, 전부 끝나면 컨테이너 조기 종료(22:00 안전장치 포함). paused DAG는 자동 제외돼 스케줄 변경에 따라온다
 - `sql/init_timescale.sql` — hypertable 스키마(daily_bars/daily_bars_adjusted는 1년 청크, 그 외는 7일 청크 + 7일 후 압축) 및 minervini_scan/rba, earnings, consensus 등 일반 테이블
 - `docker/Dockerfile` — collectors/ 자체 의존성만 설치하는 Airflow 이미지 (kr-quant editable install 없음)
 - `docker-compose.yml` — Airflow(webserver/scheduler) + Airflow 메타 Postgres + TimescaleDB(앱 데이터, LAN 오픈)
