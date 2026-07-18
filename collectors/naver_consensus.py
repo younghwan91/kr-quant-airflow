@@ -178,6 +178,21 @@ def main() -> int:
     f = open(args.out, "a", newline="") if args.out else None
     w = csv.writer(f) if f else None
     n = 0
+    # DB 경로: future 완료마다 개별 upsert(~2,600회 라운드트립) 대신 _CHUNK_SIZE개
+    # 완료마다 배치 upsert. 루프 종료 후 1회(메가배치)는 크래시 시 전체 진행분을
+    # 잃으므로 청크 단위 중간 커밋으로 손실을 최대 1청크 분량으로 제한한다.
+    # as_completed 순서라 청크 경계는 종목 순서가 아니라 완료 순서 기준이지만,
+    # 각 레코드가 독립적이라(같은 (code,date) 재수집이 아님) 문제 없다.
+    _CHUNK_SIZE = 100
+    db_buffer: list[tuple] = []
+
+    def flush_db() -> None:
+        nonlocal n
+        if db_buffer:
+            upsert_consensus(con, db_buffer)
+            n += len(db_buffer)
+            db_buffer.clear()
+
     # 종목당 2개 독립 엔드포인트(integration/finance-annual) 순차 호출 + sleep이라
     # ~2,600종목이면 sleep만 수십 분 걸림 — 스레드풀로 종목 단위 fetch를 겹쳐서
     # wall-clock을 줄인다. DB/CSV 쓰기는 메인 스레드에서만(순차) 수행해 커넥션을
@@ -190,16 +205,19 @@ def main() -> int:
                 continue
 
             if args.db_table:
-                upsert_consensus(con, [(code, today, tm, rm, bd, fe, pe, ey)])
+                db_buffer.append((code, today, tm, rm, bd, fe, pe, ey))
+                if len(db_buffer) >= _CHUNK_SIZE:
+                    flush_db()
             else:
                 def _s(x: object) -> object:
                     return x if x is not None else ""
                 w.writerow([today, code, _s(tm), _s(rm), bd or "", _s(fe), _s(pe), ey or ""])
-            n += 1
+                n += 1
             if i % 50 == 0:
                 if f:
                     f.flush()
                 print(f"[{i}/{len(pending)}] rows={n}", flush=True)
+    flush_db()
     if f:
         f.close()
     if args.db_table:

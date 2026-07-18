@@ -48,6 +48,12 @@ from .supply_demand import fetch_stock_list, is_common_stock
 _SHARES_FIELD = "flo_stk"
 _SHARES_UNIT_MULTIPLIER = 1000
 
+# 종목별 즉시 upsert(~2,600회 DB 라운드트립) 대신 CHUNK_SIZE개마다 배치 upsert.
+# 루프 종료 후 1회 upsert(메가배치)는 크래시 시 전체 진행분을 잃고 레코드 1건
+# 오류가 전체를 롤백시키므로 대신 청크 단위 중간 커밋을 쓴다 — 크래시 손실을
+# 최대 1청크(~2분) 분량으로 제한하면서 라운드트립은 ~2,600 → ~26회로 줄인다.
+_CHUNK_SIZE = 100
+
 
 def collect(
     api: KiwoomAPI,
@@ -60,13 +66,19 @@ def collect(
     today = time.strftime("%Y%m%d")
     stats = {"done": 0, "failed": 0, "rows": 0}
     started = time.monotonic()
+    buffer: list[tuple] = []
+
+    def flush() -> None:
+        if buffer:
+            stats["rows"] += upsert_shares_outstanding(con, buffer)
+            buffer.clear()
 
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
         try:
             resp = api.stock_info.basic_stock_info(stk_cd=code)
             shares = to_int(resp.get(_SHARES_FIELD)) * _SHARES_UNIT_MULTIPLIER
-            stats["rows"] += upsert_shares_outstanding(con, [(code, today, shares)])
+            buffer.append((code, today, shares))
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
@@ -74,6 +86,9 @@ def collect(
         except Exception as e:  # noqa: BLE001 — isolate per-stock failures
             stats["failed"] += 1
             print(f"  💥 {code} {stock['name']}: {type(e).__name__}: {e}")
+
+        if len(buffer) >= _CHUNK_SIZE:
+            flush()
 
         if i % progress_every == 0 or i == len(stocks):
             elapsed = time.monotonic() - started
@@ -83,6 +98,7 @@ def collect(
                 f"  [{i}/{len(stocks)}] done={stats['done']} fail={stats['failed']} "
                 f"| {stats['rows']:,} rows | {rate:.1f} stk/s | ETA {eta:.1f}m"
             )
+    flush()
     return stats
 
 

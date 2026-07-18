@@ -85,6 +85,13 @@ def _build_cb_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
     return records
 
 
+# 종목별 즉시 upsert(~2,600회×2 DB 라운드트립) 대신 CHUNK_SIZE개 종목마다 배치
+# upsert. 루프 종료 후 1회 upsert(메가배치)는 크래시 시 전체 진행분을 잃고
+# 레코드 1건 오류가 전체를 롤백시키므로 대신 청크 단위 중간 커밋을 쓴다 —
+# 크래시 손실을 최대 1청크(~2분) 분량으로 제한하면서 라운드트립을 크게 줄인다.
+_CHUNK_SIZE = 100
+
+
 def collect(
     api: KiwoomAPI,
     con: sqlite3.Connection,
@@ -99,6 +106,16 @@ def collect(
     start_dt = cutoff
     stats = {"done": 0, "skipped": 0, "failed": 0, "ss_rows": 0, "cb_rows": 0}
     started = time.monotonic()
+    ss_buffer: list[tuple] = []
+    cb_buffer: list[tuple] = []
+
+    def flush() -> None:
+        if ss_buffer:
+            stats["ss_rows"] += upsert_short_selling(con, ss_buffer)
+            ss_buffer.clear()
+        if cb_buffer:
+            stats["cb_rows"] += upsert_credit_balance(con, cb_buffer)
+            cb_buffer.clear()
 
     for i, stock in enumerate(stocks, 1):
         code = stock["code"]
@@ -110,17 +127,13 @@ def collect(
             ss_resp = api.short_selling.short_selling_trend(
                 stk_cd=code, tm_tp="1", strt_dt=start_dt, end_dt=today
             )
-            stats["ss_rows"] += upsert_short_selling(
-                con, _build_ss_records(code, ss_resp, cutoff)
-            )
+            ss_buffer.extend(_build_ss_records(code, ss_resp, cutoff))
 
             # 신용잔고 (ka10013) — independent TR bucket
             cb_resp = api.stock_info.credit_trading_trend(
                 stk_cd=code, dt="0", qry_tp="1"
             )
-            stats["cb_rows"] += upsert_credit_balance(
-                con, _build_cb_records(code, cb_resp, cutoff)
-            )
+            cb_buffer.extend(_build_cb_records(code, cb_resp, cutoff))
             stats["done"] += 1
         except KiwoomAPIError as e:
             stats["failed"] += 1
@@ -128,6 +141,9 @@ def collect(
         except Exception as e:  # noqa: BLE001
             stats["failed"] += 1
             print(f"  💥 {code} {stock['name']}: {type(e).__name__}: {e}")
+
+        if stats["done"] % _CHUNK_SIZE == 0:
+            flush()
 
         if i % progress_every == 0 or i == len(stocks):
             elapsed = time.monotonic() - started
@@ -138,6 +154,7 @@ def collect(
                 f"fail={stats['failed']} | 공매도 {stats['ss_rows']:,} / "
                 f"신용 {stats['cb_rows']:,} | {rate:.1f} stk/s | ETA {eta:.1f}m"
             )
+    flush()
     return stats
 
 
