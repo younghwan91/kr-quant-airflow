@@ -137,7 +137,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 | 테이블 | 내용 |
 |---|---|
 | `stocks` | 종목 마스터(코드·이름·시장·섹터) |
-| `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` |
+| `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
 | `minervini_scan` | 미너비니 스캐너의 일별 레짐 + 진입 후보 |
 | `minervini_rba` | 스캐너 픽의 실현결과(RBA) 축적 |
 | `delisted_stocks` | 상장폐지 종목(생존편향 보정) |

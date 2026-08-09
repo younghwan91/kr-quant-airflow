@@ -99,25 +99,37 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
 SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);
 
--- 일반 테이블(하이퍼테이블 아님): 자연키가 (code, period)라 avail_date를 PK에
--- 넣을 수 없고, TimescaleDB는 파티션 컬럼(avail_date)이 빠진 유니크 인덱스를
--- 허용하지 않는다 — create_hypertable+PRIMARY KEY(code,period) 조합은 생성 시
--- 에러남(실제 DB로 검증됨). storage.upsert_earnings()도 ON CONFLICT(code,period)
--- 라 유니크 제약이 정확히 이 두 컬럼이어야 한다. 실적 데이터는 전종목 ~10년치도
--- 수만~십만 행 규모라 압축/청크 이점이 거의 없어 일반 테이블로 충분하다.
+-- 일반 테이블(하이퍼테이블 아님): 자연키가 (code, period, knowledge_date)라
+-- 파티션 후보인 avail_date가 PK에 없고, TimescaleDB는 파티션 컬럼이 빠진 유니크
+-- 인덱스를 허용하지 않는다 — create_hypertable 조합은 생성 시 에러남(실제 DB로
+-- 검증됨). 실적 데이터는 전종목 ~10년치도 수만~십만 행 규모라 압축/청크 이점이
+-- 거의 없어 일반 테이블로 충분하다.
+--
+-- knowledge_date가 키에 들어가는 이유: DART 정정공시가 기존 행을 덮어쓰면 "그때
+-- 알 수 있었던 값"이 사라져, 그 구간을 도는 백테스트가 사후 수정된 숫자를 당시
+-- 알았던 것처럼 읽는다. 정정본은 새 행으로 쌓고, 읽는 쪽이 as-of로 고른다:
+--
+--   SELECT DISTINCT ON (code, period) *
+--   FROM earnings WHERE knowledge_date <= :asof
+--   ORDER BY code, period, knowledge_date DESC;
+--
+-- storage.upsert_earnings()는 값이 실제로 바뀐 행만 새 버전으로 넣는다(같은 값
+-- 재수집은 행이 늘지 않음).
 CREATE TABLE IF NOT EXISTS earnings (
     code            TEXT NOT NULL,
     period          TEXT NOT NULL,   -- e.g. '2020Q1'
     avail_date      DATE NOT NULL,   -- lookahead-safe availability date (period-end + filing lag)
+    knowledge_date  DATE NOT NULL,   -- 이 값을 알게 된 날(수집일) — 정정공시는 새 행
     netinc          DOUBLE PRECISION,
     netinc_prior    DOUBLE PRECISION,
     revenue         DOUBLE PRECISION,
     revenue_prior   DOUBLE PRECISION,
     op_income       DOUBLE PRECISION,
     op_income_prior DOUBLE PRECISION,
-    PRIMARY KEY (code, period)
+    PRIMARY KEY (code, period, knowledge_date)
 );
 CREATE INDEX IF NOT EXISTS idx_earnings_avail_date ON earnings(avail_date);
+CREATE INDEX IF NOT EXISTS idx_earnings_asof ON earnings(code, period, knowledge_date DESC);
 
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,

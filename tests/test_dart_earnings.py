@@ -133,21 +133,22 @@ def test_fetch_no_rotation_when_single_key_limited(monkeypatch):
 
 def test_write_row_db_upserts_correct_tuple_shape(monkeypatch):
     # --db-table 모드는 CSV 대신 storage.upsert_earnings를 호출해야 하고,
-    # 튜플 순서는 _EARNINGS_COLS(code,period,avail_date,netinc,netinc_prior,
-    # revenue,revenue_prior,op_income,op_income_prior)와 정확히 일치해야 한다.
+    # 튜플 순서는 _EARNINGS_COLS(code,period,avail_date,knowledge_date,netinc,
+    # netinc_prior,revenue,revenue_prior,op_income,op_income_prior)와 정확히 일치해야 한다.
     calls = []
     monkeypatch.setattr(
         "collectors.storage.upsert_earnings",
         lambda con, records: calls.append((con, records)),
     )
     dart_earnings._write_row_db(
-        "fake_con", "005930", "2023Q1", "20230515",
+        "fake_con", "005930", "2023Q1", "20230515", "20230515",
         200.0, 100.0, 1000.0, 900.0, 300.0, 250.0,
     )
     assert len(calls) == 1
     con, records = calls[0]
     assert con == "fake_con"
-    assert records == [("005930", "2023Q1", "20230515", 200.0, 100.0, 1000.0, 900.0, 300.0, 250.0)]
+    assert records == [("005930", "2023Q1", "20230515", "20230515",
+                        200.0, 100.0, 1000.0, 900.0, 300.0, 250.0)]
 
 
 def test_write_row_db_passes_none_through_without_coercion(monkeypatch):
@@ -159,10 +160,11 @@ def test_write_row_db_passes_none_through_without_coercion(monkeypatch):
         lambda con, records: calls.append(records),
     )
     dart_earnings._write_row_db(
-        "fake_con", "005930", "2023Q1", "20230515",
+        "fake_con", "005930", "2023Q1", "20230515", "20230515",
         -50.0, None, None, None, None, None,
     )
-    assert calls == [[("005930", "2023Q1", "20230515", -50.0, None, None, None, None, None)]]
+    assert calls == [[("005930", "2023Q1", "20230515", "20230515",
+                       -50.0, None, None, None, None, None)]]
 
 
 def test_recent_quarters_within_year():
@@ -193,7 +195,7 @@ def test_universe_query_default_uses_top_n_limit():
 def test_db_table_resume_skips_existing_code_period_but_fetches_new_period(monkeypatch):
     con = storage.connect(":memory:")
     storage.upsert_earnings(con, [
-        ("005930", "2023Q1", "20230515", 200.0, 100.0, 1000.0, 900.0, 300.0, 250.0),
+        ("005930", "2023Q1", "20230515", "20230515", 200.0, 100.0, 1000.0, 900.0, 300.0, 250.0),
     ])
 
     import pandas as pd
@@ -243,7 +245,7 @@ def test_new_stock_with_no_prior_earnings_is_never_skipped():
     # (기존 종목의 새 분기와 마찬가지로) 정상적으로 fetch 대상이어야 한다.
     con = storage.connect(":memory:")
     storage.upsert_earnings(con, [
-        ("005930", "2023Q1", "20230515", 200.0, 100.0, 1000.0, 900.0, 300.0, 250.0),
+        ("005930", "2023Q1", "20230515", "20230515", 200.0, 100.0, 1000.0, 900.0, 300.0, 250.0),
     ])
 
     import pandas as pd
@@ -375,4 +377,4 @@ def test_collect_all_financials_batched_chunks_by_batch_size_and_skips_done_peri
     assert "000660" not in codes_seen             # 레주메: 이미 완료분 재수집 안 함
     row = next(r for r in rows if r[0] == "005930")
     assert row[1] == "2023Q1"
-    assert row[3:5] == (100.0, 50.0)              # netinc, netinc_prior
+    assert row[4:6] == (100.0, 50.0)              # netinc, netinc_prior

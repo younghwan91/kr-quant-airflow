@@ -325,7 +325,7 @@ def collect_all_financials_batched(
                 ni, nip, rev, revp, oi, oip = result[cc]
                 if ni is None:
                     continue
-                rows.append((sc, period, avail, ni, nip, rev, revp, oi, oip))
+                rows.append((sc, period, avail, today, ni, nip, rev, revp, oi, oip))
             time.sleep(sleep)
         print(f"[{period}] 누적 rows={len(rows)}", flush=True)
     return rows
@@ -372,11 +372,11 @@ def _write_row_csv(w: "csv.writer", code: str, period: str, avail: str,
                 _c(yoy_growth(ni, nip)), _c(rev), _c(revp), _c(oi), _c(oip)])
 
 
-def _write_row_db(con: Any, code: str, period: str, avail: str,
+def _write_row_db(con: Any, code: str, period: str, avail: str, known: str,
                    ni: float | None, nip: float | None, rev: float | None,
                    revp: float | None, oi: float | None, oip: float | None) -> None:
     from .storage import upsert_earnings
-    upsert_earnings(con, [(code, period, avail, ni, nip, rev, revp, oi, oip)])
+    upsert_earnings(con, [(code, period, avail, known, ni, nip, rev, revp, oi, oip)])
 
 
 def _recent_quarters(n: int, today: datetime | None = None) -> list[tuple[int, int]]:
@@ -491,7 +491,7 @@ def main() -> int:
             if ni is None:
                 continue
             if args.db_table:
-                _write_row_db(con, code, period, avail, ni, nip, rev, revp, oi, oip)
+                _write_row_db(con, code, period, avail, today, ni, nip, rev, revp, oi, oip)
             else:
                 _write_row_csv(w, code, period, avail, ni, nip, rev, revp, oi, oip)
             n += 1

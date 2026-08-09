@@ -11,15 +11,25 @@ from unittest.mock import MagicMock, patch
 from collectors.storage import (
     DAILY_BAR_COLUMNS,
     SUPPLY_DEMAND_COLUMNS,
+    _EARNINGS_COLS,
     _upsert,
     connect,
     to_float,
     to_int,
     upsert_daily_bars,
+    upsert_earnings,
     upsert_minervini_scan,
     upsert_stocks,
     upsert_supply_demand,
 )
+
+
+def _earnings(code, period, avail_date, knowledge_date, netinc):
+    """One earnings row ordered by _EARNINGS_COLS; only netinc varies per restatement."""
+    values = {"code": code, "period": period, "avail_date": avail_date,
+              "knowledge_date": knowledge_date, "netinc": netinc, "netinc_prior": 1.0,
+              "revenue": 10.0, "revenue_prior": 9.0, "op_income": 2.0, "op_income_prior": 1.5}
+    return tuple(values[c] for c in _EARNINGS_COLS)
 
 
 def test_to_int_handles_kiwoom_strings():
@@ -86,6 +96,42 @@ def _bar(code, date, close):
     values = {"code": code, "date": date, "open": close, "high": close,
               "low": close, "close": close, "volume": 0, "trade_value": 0}
     return tuple(values[c] for c in DAILY_BAR_COLUMNS)
+
+
+def test_upsert_earnings_keeps_the_value_that_was_known_before_a_restatement(tmp_path):
+    """A DART restatement must add a version, not overwrite what we knew earlier.
+
+    The daily DAG re-collects the two most recent quarters every weekday, so a
+    revised figure lands on a (code, period) that already has a row. Overwriting
+    it makes any backtest of that window read today's number as if it had been
+    known at the time.
+    """
+    con = connect(tmp_path / "t.db")
+    upsert_earnings(con, [_earnings("005930", "2024Q1", "20240515", "20240515", 6.6e12)])
+    upsert_earnings(con, [_earnings("005930", "2024Q1", "20240515", "20241114", 6.4e12)])
+
+    rows = con.execute(
+        "SELECT knowledge_date, netinc FROM earnings ORDER BY knowledge_date"
+    ).fetchall()
+    assert [r["knowledge_date"] for r in rows] == ["20240515", "20241114"]
+    assert [r["netinc"] for r in rows] == [6.6e12, 6.4e12]
+    con.close()
+
+
+def test_upsert_earnings_does_not_add_a_version_when_nothing_changed(tmp_path):
+    """Re-collecting the same figures on a later day must not grow the table.
+
+    daily_earnings re-fetches the two most recent quarters for every code each
+    weekday. Versioning on collection date alone would append ~2,600 identical
+    rows per quarter per day; only a changed figure is a new version.
+    """
+    con = connect(tmp_path / "t.db")
+    upsert_earnings(con, [_earnings("005930", "2024Q1", "20240515", "20240515", 6.6e12)])
+    upsert_earnings(con, [_earnings("005930", "2024Q1", "20240515", "20240516", 6.6e12)])
+
+    rows = con.execute("SELECT knowledge_date FROM earnings").fetchall()
+    assert [r["knowledge_date"] for r in rows] == ["20240515"]
+    con.close()
 
 
 def test_upsert_minervini_scan_round_trips_and_upserts_on_date(tmp_path):

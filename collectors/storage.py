@@ -141,15 +141,17 @@ CREATE TABLE IF NOT EXISTS earnings (
     code            TEXT NOT NULL,
     period          TEXT NOT NULL,   -- e.g. '2020Q1'
     avail_date      TEXT,            -- lookahead-safe availability date (period-end + filing lag)
+    knowledge_date  TEXT NOT NULL,   -- 이 값을 우리가 알게 된 날 (수집일). 정정공시는 새 행으로 쌓인다.
     netinc          REAL,
     netinc_prior    REAL,
     revenue         REAL,
     revenue_prior   REAL,
     op_income       REAL,
     op_income_prior REAL,
-    PRIMARY KEY (code, period)
+    PRIMARY KEY (code, period, knowledge_date)
 );
 CREATE INDEX IF NOT EXISTS idx_earnings_avail_date ON earnings(avail_date);
+CREATE INDEX IF NOT EXISTS idx_earnings_asof ON earnings(code, period, knowledge_date DESC);
 CREATE TABLE IF NOT EXISTS consensus (
     code         TEXT NOT NULL,
     date         TEXT NOT NULL,   -- 스냅샷 수집일 (오늘)
@@ -358,14 +360,57 @@ def upsert_shares_outstanding(con: Any, records: list[tuple]) -> int:
 
 
 _EARNINGS_COLS = [
-    "code", "period", "avail_date",
+    "code", "period", "avail_date", "knowledge_date",
     "netinc", "netinc_prior", "revenue", "revenue_prior", "op_income", "op_income_prior",
 ]
 
 
+_EARNINGS_KEY_COLS = ("code", "period", "knowledge_date")
+_EARNINGS_VALUE_COLS = [c for c in _EARNINGS_COLS if c not in _EARNINGS_KEY_COLS]
+
+
+def _latest_earnings(con: Any, periods: set[str]) -> dict[tuple[str, str], tuple]:
+    """``{(code, period): value tuple}`` for the newest knowledge_date of each key."""
+    if not periods:
+        return {}
+    ph = ",".join(["%s" if _is_pg(con) else "?"] * len(periods))
+    sql = (
+        f"SELECT code, period, {','.join(_EARNINGS_VALUE_COLS)} FROM earnings e "
+        f"WHERE period IN ({ph}) AND knowledge_date = "
+        "(SELECT MAX(knowledge_date) FROM earnings x WHERE x.code = e.code AND x.period = e.period)"
+    )
+    params = tuple(sorted(periods))
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    else:
+        rows = con.execute(sql, params).fetchall()
+    return {(r[0], r[1]): tuple(r[2:]) for r in rows}
+
+
 def upsert_earnings(con: Any, records: list[tuple]) -> int:
-    """Insert/replace earnings rows (tuples ordered by _EARNINGS_COLS)."""
-    return _upsert(con, "earnings", _EARNINGS_COLS, records, pk_cols=("code", "period"))
+    """Insert earnings rows (tuples ordered by _EARNINGS_COLS), versioned by knowledge_date.
+
+    The key includes ``knowledge_date``, so a DART restatement collected later lands
+    as a new row instead of overwriting what was known at the time — a backtest can
+    then ask what was knowable on a given date rather than what is known now.
+
+    Only *changed* figures are versioned: daily_earnings re-fetches the two most
+    recent quarters for every code each weekday, and versioning those unchanged
+    re-reads would add ~2,600 identical rows per quarter per day. Returns the number
+    of rows actually written.
+    """
+    if not records:
+        return 0
+    idx = {c: i for i, c in enumerate(_EARNINGS_COLS)}
+    latest = _latest_earnings(con, {r[idx["period"]] for r in records})
+    fresh = [
+        r for r in records
+        if latest.get((r[idx["code"]], r[idx["period"]]))
+        != tuple(r[idx[c]] for c in _EARNINGS_VALUE_COLS)
+    ]
+    return _upsert(con, "earnings", _EARNINGS_COLS, fresh, pk_cols=_EARNINGS_KEY_COLS)
 
 
 _CONSENSUS_COLS = [
