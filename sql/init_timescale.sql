@@ -146,14 +146,6 @@ SELECT create_hypertable('consensus', 'date', if_not_exists => TRUE, chunk_time_
 CREATE INDEX IF NOT EXISTS idx_consensus_date ON consensus(date);
 
 -- 일반 테이블: 거래일당 1행뿐이라(연 ~250행) 하이퍼테이블/압축 이점이 없음.
-CREATE TABLE IF NOT EXISTS minervini_scan (
-    date         TEXT NOT NULL,
-    breadth      DOUBLE PRECISION,
-    regime       TEXT,
-    n_candidates INTEGER,
-    codes        TEXT,
-    PRIMARY KEY (date)
-);
 
 CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     code        TEXT NOT NULL,
@@ -179,16 +171,6 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
 );
 
 -- 일반 테이블: RBA 축적은 스캐너 픽 건수 기준이라 소규모, 하이퍼테이블 이점 없음.
-CREATE TABLE IF NOT EXISTS minervini_rba (
-    pick_date TEXT NOT NULL,  -- 스캐너가 진입후보로 뽑은 날짜
-    code      TEXT NOT NULL,
-    entry     REAL,
-    exit_px   REAL,
-    outcome   TEXT,   -- 'stop' / 'target_2R' / 'open'(20일 경과, 미확정 종료)
-    ret_pct   REAL,
-    days      INTEGER,
-    PRIMARY KEY (pick_date, code)
-);
 
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds

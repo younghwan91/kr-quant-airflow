@@ -30,7 +30,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 
 | | kr-quant-airflow (이 레포, public) | [kr-quant](https://github.com/younghwan91/kr-quant) (private) |
 |---|---|---|
-| **역할** | 데이터 **수집·적재·스케줄링** | 전략·피처 **분석** (백테스트, SEPA, PEAD, minervini) |
+| **역할** | 데이터 **수집·적재·스케줄링** | 전략·피처 **분석** (백테스트, PEAD 등) |
 | **DB 접근** | 쓰기 (수집기가 upsert) | 읽기 전용 |
 | **핵심 디렉토리** | `collectors/`, `dags/` | `kr_quant/` 라이브러리 |
 
@@ -42,8 +42,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
    대한 런타임 의존이 전혀 없다(자체 `collectors/storage.py`·`collectors/config.py`를 갖는다).
 
 > **예외** — kr-quant는 여전히 `/opt/kr-quant`에 읽기 전용으로 마운트된다.
-> `daily_minervini_scan`(scanner_final.py 전략 로직)과
-> `weekly_price_adjust`(kr_quant.price_adjust 백조정 로직) 두 DAG가 kr-quant의
+> `weekly_price_adjust`(kr_quant.price_adjust 백조정 로직) DAG가 kr-quant의
 > 분석 코드를 in-place로 실행하기 때문이다(패키지 설치가 아니라 PYTHONPATH/sys.path 기반).
 
 ## 아키텍처
@@ -95,7 +94,6 @@ docker compose up -d
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, `--multi-batch`) |
 | `daily_consensus` | 평일 18:00 | 네이버 애널리스트 컨센서스 |
 | `daily_krx_shares` | 평일 18:30 | KRX 일별 상장주식수(point-in-time) |
-| `daily_minervini_scan` | 평일 18:40 | 미너비니 스캐너 픽 + RBA 실현결과 축적 |
 
 **주간 — 백필/스냅샷**
 
@@ -138,8 +136,6 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 |---|---|
 | `stocks` | 종목 마스터(코드·이름·시장·섹터) |
 | `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
-| `minervini_scan` | 미너비니 스캐너의 일별 레짐 + 진입 후보 |
-| `minervini_rba` | 스캐너 픽의 실현결과(RBA) 축적 |
 | `delisted_stocks` | 상장폐지 종목(생존편향 보정) |
 
 ## 저장소 구조
