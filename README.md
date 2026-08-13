@@ -18,6 +18,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 - [DAG 목록](#dag-목록)
 - [데이터 스키마](#데이터-스키마)
 - [저장소 구조](#저장소-구조)
+- [스키마 마이그레이션](#스키마-마이그레이션)
 - [TimescaleDB 설계 노트](#timescaledb-설계-노트)
 - [메인 PC에서 데이터 읽기](#메인-pc에서-데이터-읽기)
 - [시크릿 처리](#시크릿-처리)
@@ -158,6 +159,23 @@ docker-compose.yml     # Airflow(web/scheduler) + Airflow 메타 Postgres + Time
 **`dags/_common.py`** — DAG마다 중복되던 DSN·자격증명 헬퍼를 한곳에 모았다.
 `run_collector()`는 수집기 stdout을 태스크 로그로 실시간 스트리밍하고, 로그에 남을 수
 있는 DSN 비밀번호를 마스킹한다(`collectors/config.py`의 `mask_dsn`을 재사용하는 단일 소스).
+
+## 스키마 마이그레이션
+
+`sql/init_timescale.sql`은 **새 DB를 세우는** 스크립트다. 이미 데이터가 있는 DB는
+`sql/migrations/`를 순서대로 적용한다.
+
+```bash
+psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_date.sql
+```
+
+| 마이그레이션 | 적용일 | 내용 |
+|---|---|---|
+| `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
+
+> ⚠️ 001은 코드(`collectors/storage.py`)가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이
+> `daily_earnings`가 초록불이었던 건 비수기라 `rows=0`이어서 DB를 건드리기 전에 빠져나갔기
+> 때문이지, 스키마가 맞아서가 아니다. **스키마를 바꾸는 커밋은 DB 적용까지가 한 단위다.**
 
 ## TimescaleDB 설계 노트
 
