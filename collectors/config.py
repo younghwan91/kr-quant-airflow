@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from kiwoom_rest_api import KiwoomAPI
+if TYPE_CHECKING:  # 런타임 import 는 make_api 안에서 — 아래 주석 참고.
+    from kiwoom_rest_api import KiwoomAPI
 
 
 def repo_root() -> Path:
@@ -47,7 +49,7 @@ def load_keys(env_path: str | Path | None = None) -> tuple[str, str]:
     return app_key, app_secret
 
 
-def make_api(is_mock: bool = True, *, login: bool = True, **kwargs) -> KiwoomAPI:
+def make_api(is_mock: bool = True, *, login: bool = True, **kwargs) -> "KiwoomAPI":
     """Build a KiwoomAPI client (per-TR rate limiting on by default) and log in.
 
     Args:
@@ -55,6 +57,11 @@ def make_api(is_mock: bool = True, *, login: bool = True, **kwargs) -> KiwoomAPI
         login: Issue an access token immediately.
         **kwargs: Forwarded to ``KiwoomAPI`` (e.g. rate_limit, max_retries).
     """
+    # 지연 import: 이 모듈에는 mask_dsn/load_keys 처럼 키움과 무관한 헬퍼도 있는데,
+    # 최상단에서 클라이언트를 끌어오면 네이버·DART 전용 수집기와 그 테스트까지
+    # kiwoom_rest_api 설치를 요구하게 된다.
+    from kiwoom_rest_api import KiwoomAPI
+
     app_key, app_secret = load_keys()
     api = KiwoomAPI(app_key=app_key, app_secret=app_secret, is_mock=is_mock, **kwargs)
     if login:
