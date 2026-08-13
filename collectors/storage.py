@@ -164,14 +164,6 @@ CREATE TABLE IF NOT EXISTS consensus (
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_consensus_date ON consensus(date);
-CREATE TABLE IF NOT EXISTS minervini_scan (
-    date        TEXT NOT NULL,
-    breadth     REAL,   -- 유동주 close>MA50 비율
-    regime      TEXT,   -- 'risk_on' / 'risk_off'
-    n_candidates INTEGER,
-    codes       TEXT,   -- 콤마구분 진입후보 코드 (없으면 빈 문자열)
-    PRIMARY KEY (date)
-);
 CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     code        TEXT NOT NULL,
     date        TEXT NOT NULL,
@@ -190,16 +182,6 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     market          TEXT,
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
     PRIMARY KEY (code)
-);
-CREATE TABLE IF NOT EXISTS minervini_rba (
-    pick_date TEXT NOT NULL,  -- 스캐너가 진입후보로 뽑은 날짜
-    code      TEXT NOT NULL,
-    entry     REAL,
-    exit_px   REAL,
-    outcome   TEXT,   -- 'stop' / 'target_2R' / 'open'(20일 경과, 미확정 종료)
-    ret_pct   REAL,
-    days      INTEGER,
-    PRIMARY KEY (pick_date, code)
 );
 """
 
@@ -423,14 +405,6 @@ def upsert_consensus(con: Any, records: list[tuple]) -> int:
     return _upsert(con, "consensus", _CONSENSUS_COLS, records)
 
 
-_MINERVINI_SCAN_COLS = ["date", "breadth", "regime", "n_candidates", "codes"]
-
-
-def upsert_minervini_scan(con: Any, records: list[tuple]) -> int:
-    """Insert/replace minervini_scan rows (tuples ordered by _MINERVINI_SCAN_COLS)."""
-    return _upsert(con, "minervini_scan", _MINERVINI_SCAN_COLS, records, pk_cols=("date",))
-
-
 def upsert_daily_bars_adjusted(con: Any, records: list[tuple]) -> int:
     """Insert/replace daily_bars_adjusted rows (tuples ordered by DAILY_BAR_COLUMNS)."""
     return _upsert(con, "daily_bars_adjusted", DAILY_BAR_COLUMNS, records)
@@ -443,10 +417,3 @@ def upsert_delisted_stocks(con: Any, records: list[tuple]) -> int:
     """Insert/replace delisted_stocks rows (tuples ordered by _DELISTED_STOCKS_COLS)."""
     return _upsert(con, "delisted_stocks", _DELISTED_STOCKS_COLS, records, pk_cols=("code",))
 
-
-_MINERVINI_RBA_COLS = ["pick_date", "code", "entry", "exit_px", "outcome", "ret_pct", "days"]
-
-
-def upsert_minervini_rba(con: Any, records: list[tuple]) -> int:
-    """Insert/replace minervini_rba rows (tuples ordered by _MINERVINI_RBA_COLS)."""
-    return _upsert(con, "minervini_rba", _MINERVINI_RBA_COLS, records, pk_cols=("pick_date", "code"))

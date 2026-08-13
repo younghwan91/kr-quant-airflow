@@ -18,7 +18,6 @@ from collectors.storage import (
     to_int,
     upsert_daily_bars,
     upsert_earnings,
-    upsert_minervini_scan,
     upsert_stocks,
     upsert_supply_demand,
 )
@@ -133,16 +132,3 @@ def test_upsert_earnings_does_not_add_a_version_when_nothing_changed(tmp_path):
     assert [r["knowledge_date"] for r in rows] == ["20240515"]
     con.close()
 
-
-def test_upsert_minervini_scan_round_trips_and_upserts_on_date(tmp_path):
-    con = connect(tmp_path / "t.db")
-    upsert_minervini_scan(con, [("2026-07-11", 0.62, "risk_on", 2, "005930,000660")])
-    upsert_minervini_scan(con, [("2026-07-11", 0.71, "risk_on", 3, "005930,000660,035420")])
-
-    cur = con.cursor()
-    cur.execute("SELECT date, breadth, regime, n_candidates, codes FROM minervini_scan")
-    rows = cur.fetchall()
-    assert len(rows) == 1  # same date -> replaced, not duplicated
-    assert rows[0]["breadth"] == 0.71
-    assert rows[0]["n_candidates"] == 3
-    con.close()

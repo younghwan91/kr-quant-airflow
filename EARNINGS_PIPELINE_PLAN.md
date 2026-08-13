@@ -1,5 +1,9 @@
 # 실적 수집 파이프라인 재구성 — 핸드오프 계획서
 
+> ⚠️ **완료된 계획서(기록용).** 아래 "건드리지 말 것" 목록의 SEPA/미너비니 파일들은
+> 2026-08-13 자로 kr-quant에서 삭제됐다. 그 조항은 당시 세션 분담 규칙이었을 뿐,
+> 지금은 해당 없음.
+
 > **대상:** 실적(DART) 수집 파이프라인을 담당할 다른 터미널의 에이전트.
 > **범위:** kr-quant `collectors/dart_earnings.py`·`storage.py` + kr-quant-airflow DAG.
 > (SEPA 실험 모델링 — `strategies/minervini_*`, `features/*`, 하니스 — 은 **본 세션이 계속 담당**하니 건드리지 말 것.)

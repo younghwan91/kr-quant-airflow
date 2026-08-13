@@ -22,7 +22,7 @@ from airflow.models import Variable
 # collectors/는 /opt/airflow 밑에 있지만, Airflow는 DAG 파싱 시 각 dag 파일
 # 자신의 디렉터리(dags/)만 sys.path에 넣는다 — /opt/airflow 자체는 자동으로
 # 안 잡힌다. 그래서 task 본문에서는 다들 sys.path.insert(0, "/opt/airflow")를
-# 직접 해왔다(예: daily_minervini_scan.py). 여기서는 모듈 로드 시점(=DAG 파싱
+# 직접 해왔다. 여기서는 모듈 로드 시점(=DAG 파싱
 # 시점)에 필요하므로 import 전에 미리 넣는다.
 sys.path.insert(0, "/opt/airflow")
 
@@ -95,8 +95,8 @@ def run_collector(
 ) -> None:
     """콜렉터를 실행하고 그 출력을 태스크 로그로 스트리밍한다.
 
-    ``cwd``는 kr-quant 쪽 스크립트를 돌리는 DAG(weekly_price_adjust,
-    daily_minervini_scan)가 ``/opt/kr-quant``를 쓰므로 인자로 받는다.
+    ``cwd``는 kr-quant 쪽 스크립트를 돌리는 DAG(weekly_price_adjust)가
+    ``/opt/kr-quant``를 쓰므로 인자로 받는다.
 
     ``subprocess.run(cmd)``처럼 stdout을 넘겨주지 않으면 자식은 OS 레벨 fd 1에
     직접 쓰는데, Airflow의 캡처(``logging_mixin``)는 파이썬 레벨 ``sys.stdout``만
