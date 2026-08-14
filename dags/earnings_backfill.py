@@ -81,6 +81,14 @@ def earnings_backfill():
                 # 215분이 된다(실측). 콜렉터엔 2026-07-12부터 있었으나 DAG가 플래그를
                 # 안 넘겨 계속 느린 경로를 타고 있었다.
                 "--db-table", "--multi-batch", "--all-codes", "--from-year", FROM_YEAR,
+                # --knowledge-date avail: 이건 과거 백필이다. 기본값 today 로 두면
+                # 오래전 공시된 값에 "오늘 알게 됨"이 찍혀, knowledge_date <= asof 로
+                # 읽는 과거 시점 백테스트에서 그 행이 통째로 안 보인다. 기존 행은
+                # upsert_earnings 가 건너뛰므로 무해해 보이지만, 새로 편입된 종목
+                # (예: 폐지 종목 백필분)이 조용히 그 상태가 된다.
+                # 위 --multi-batch 와 같은 실수의 반복이었다 — 콜렉터에 플래그를
+                # 만들고 DAG 가 안 넘기는 것.
+                "--knowledge-date", "avail",
                 "--db", timescale_dsn(),
             ],
             env=dart_env(),

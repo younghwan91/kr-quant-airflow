@@ -145,8 +145,6 @@ CREATE TABLE IF NOT EXISTS consensus (
 SELECT create_hypertable('consensus', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
 CREATE INDEX IF NOT EXISTS idx_consensus_date ON consensus(date);
 
--- 일반 테이블: 거래일당 1행뿐이라(연 ~250행) 하이퍼테이블/압축 이점이 없음.
-
 CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     code        TEXT NOT NULL,
     date        DATE NOT NULL,
@@ -169,8 +167,6 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
     PRIMARY KEY (code)
 );
-
--- 일반 테이블: RBA 축적은 스캐너 픽 건수 기준이라 소규모, 하이퍼테이블 이점 없음.
 
 -- Recent rows stay row-oriented (frequent upserts); anything older than 7
 -- days is compressed columnar in the background — cuts disk use and speeds

@@ -231,22 +231,32 @@ def _upsert(
     records: list[tuple],
     *,
     pk_cols: tuple[str, ...] = ("code", "date"),
+    on_conflict: str = "update",
 ) -> int:
     """Insert/replace ``records`` (tuples ordered by ``cols``) into ``table``.
 
     sqlite: ``INSERT OR REPLACE``. Postgres: ``INSERT ... ON CONFLICT DO
     UPDATE`` on ``pk_cols`` — same natural-key upsert semantics either way.
+
+    ``on_conflict="nothing"`` 은 기존 행을 보존한다. 폐지 종목 시세 백필처럼
+    "이미 있으면 그게 더 신뢰할 수 있는 값"인 경우에 쓴다 — 키움 실측 거래대금을
+    네이버 근사치로 덮어쓰지 않기 위함(``naver_delisted_bars``).
     """
+    if on_conflict not in ("update", "nothing"):
+        raise ValueError(f"on_conflict must be 'update' or 'nothing', got {on_conflict!r}")
     if not records:
         return 0
     if _is_pg(con):
         import psycopg2.extras  # noqa: PLC0415 — optional dep, only needed for this path
 
-        update_cols = [c for c in cols if c not in pk_cols]
-        set_clause = ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
+        if on_conflict == "nothing":
+            action = "DO NOTHING"
+        else:
+            update_cols = [c for c in cols if c not in pk_cols]
+            action = "DO UPDATE SET " + ",".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
         sql = (
             f"INSERT INTO {table}({','.join(cols)}) VALUES %s "
-            f"ON CONFLICT ({','.join(pk_cols)}) DO UPDATE SET {set_clause}"
+            f"ON CONFLICT ({','.join(pk_cols)}) {action}"
         )
         try:
             with con.cursor() as cur:
@@ -260,7 +270,8 @@ def _upsert(
             raise
     else:
         placeholders = ",".join(["?"] * len(cols))
-        sql = f"INSERT OR REPLACE INTO {table}({','.join(cols)}) VALUES({placeholders})"
+        verb = "INSERT OR IGNORE" if on_conflict == "nothing" else "INSERT OR REPLACE"
+        sql = f"{verb} INTO {table}({','.join(cols)}) VALUES({placeholders})"
         con.executemany(sql, records)
     con.commit()
     return len(records)

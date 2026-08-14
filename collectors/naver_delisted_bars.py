@@ -35,7 +35,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .storage import connect, default_db_path
+from .storage import DAILY_BAR_COLUMNS, _upsert, connect, default_db_path
 
 SISE_URL = "https://api.finance.naver.com/siseJson.naver"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -51,9 +51,9 @@ _ROW_RE = re.compile(
     r'\["(\d{8})",\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?\d+)'
 )
 
-DAILY_BAR_SOURCE_COLUMNS = [
-    "code", "date", "open", "high", "low", "close", "volume", "trade_value", "source",
-]
+# storage 의 정본에서 파생한다 — 손으로 베끼면 daily_bars 에 컬럼이 하나 늘 때
+# 두 목록이 갈라지고, 삽입이 위치 기반이라 값이 엉뚱한 컬럼으로 들어간다.
+DAILY_BAR_SOURCE_COLUMNS = [*DAILY_BAR_COLUMNS, "source"]
 
 
 def parse_sise(body: str, code: str) -> list[tuple]:
@@ -102,52 +102,48 @@ def fetch_sise(code: str, start: str = HISTORY_START, end: str | None = None,
             with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — 고정 호스트
                 return r.read().decode("utf-8", "ignore")
         except (urllib.error.URLError, TimeoutError, OSError):
-            if attempt == retries - 1:
-                return ""
-            time.sleep(1.5 * (attempt + 1))
+            if attempt < retries - 1:
+                time.sleep(1.5 * (attempt + 1))
     return ""
 
 
-def _delisted_codes(con) -> list[tuple[str, str]]:
-    """백필 대상 ``(code, name)``.
+def _delisted_codes(con, *, refetch: bool = False) -> list[str]:
+    """백필 대상 코드.
 
     6자리 숫자 코드이면서 유가증권/코스닥인 것만 — 폐지 목록에는 채권·ELW 등
     비표준 코드가 섞여 있고(약 1,800건), 코넥스는 우리 유니버스가 아니다.
+
+    **이미 받은 종목은 뺀다.** 이 수집기는 주간 DAG 로 매주 도는데, 삽입이
+    ``on_conflict="nothing"`` 이라 재조회분은 전부 버려진다. 빼지 않으면 매주
+    2,200회의 외부 요청을 보내고 그중 새로 쌓이는 건 신규 폐지분(보통 10건 미만)
+    뿐이다. ``refetch=True`` 면 전량 다시 받는다(구간을 늘려 재수집할 때).
+
+    구간 밖(마지막 거래일 < HISTORY_START)도 뺀다 — 응답이 비어 있을 게 확실한데
+    요청 비용은 그대로 든다. ``last_trade_date`` 가 NULL 인 종목은 판단 근거가
+    없으므로 남긴다(그 컬럼은 daily_bars 에서 파생한 근사치다).
     """
-    sql = (
-        "SELECT code, name FROM delisted_stocks "
-        "WHERE code ~ '^[0-9]{6}$' AND market IN ('유가증권', '코스닥') "
-        "ORDER BY code"
-    )
+    start_date = f"{HISTORY_START[:4]}-{HISTORY_START[4:6]}-{HISTORY_START[6:]}"
+    where = [
+        "code ~ '^[0-9]{6}$'",
+        "market IN ('유가증권', '코스닥')",
+        f"(last_trade_date IS NULL OR last_trade_date >= '{start_date}')",
+    ]
+    if not refetch:
+        where.append("code NOT IN (SELECT DISTINCT code FROM daily_bars WHERE source = 'naver')")
+    sql = f"SELECT code FROM delisted_stocks WHERE {' AND '.join(where)} ORDER BY code"  # noqa: S608 — 조건은 전부 모듈 상수
     with con.cursor() as cur:
         cur.execute(sql)
-        return [(r[0], r[1]) for r in cur.fetchall()]
+        return [r[0] for r in cur.fetchall()]
 
 
 def _insert_bars(con, records: list[tuple]) -> int:
     """폐지 종목 행 삽입. 이미 있는 (code, date)는 건드리지 않는다.
 
-    DO NOTHING 인 이유: 겹치는 구간이 있다면 그건 키움이 상장 중에 수집한 실측치이고,
-    네이버 근사 거래대금으로 덮어쓸 이유가 없다.
+    ``on_conflict="nothing"`` 인 이유: 겹치는 구간이 있다면 그건 키움이 상장 중에
+    수집한 실측치이고, 네이버 근사 거래대금으로 덮어쓸 이유가 없다.
     """
-    if not records:
-        return 0
-    import psycopg2.extras
-
-    cols = ", ".join(DAILY_BAR_SOURCE_COLUMNS)
-    ph = "(" + ", ".join(["%s"] * len(DAILY_BAR_SOURCE_COLUMNS)) + ")"
-    sql = (f"INSERT INTO daily_bars ({cols}) VALUES %s "  # noqa: S608 — 컬럼은 모듈 상수
-           "ON CONFLICT (code, date) DO NOTHING")
-    with con.cursor() as cur:
-        # page_size 를 전체 길이로 — 기본값(100)이면 execute_values 가 여러 문장으로
-        # 쪼개 실행하고 cur.rowcount 는 **마지막 배치만** 반영해서, 실제로 4,628행이
-        # 들어갔는데 328 로 보고하는 일이 생긴다(실측). 종목당 최대 ~2,500행이라
-        # 한 문장으로 보내도 문제 없다.
-        psycopg2.extras.execute_values(cur, sql, records, template=ph,
-                                       page_size=max(len(records), 100))
-        written = cur.rowcount
-    con.commit()
-    return written
+    return _upsert(con, "daily_bars", DAILY_BAR_SOURCE_COLUMNS, records,
+                   on_conflict="nothing")
 
 
 def main() -> int:
@@ -157,43 +153,43 @@ def main() -> int:
     ap.add_argument("--sleep", type=float, default=0.25, help="요청 간 대기(초)")
     ap.add_argument("--start", default=HISTORY_START, help="시작일 YYYYMMDD")
     ap.add_argument("--dry-run", action="store_true", help="조회만 하고 기록하지 않음")
+    ap.add_argument("--refetch", action="store_true",
+                    help="이미 받은 종목도 다시 조회 (기본은 신규 폐지분만)")
     args = ap.parse_args()
 
     from .config import mask_dsn
 
     con = connect(args.db or default_db_path())
-    codes = _delisted_codes(con)
+    codes = _delisted_codes(con, refetch=args.refetch)
     if args.limit:
         codes = codes[: args.limit]
 
     print(f"🔌 {mask_dsn(args.db)} | 대상 {len(codes)}종목 | start={args.start}"
           f"{' | DRY-RUN' if args.dry_run else ''}")
 
-    stats = {"codes": 0, "with_data": 0, "in_window": 0, "empty": 0, "rows": 0, "written": 0}
+    empty = rows_seen = written = 0
     t0 = time.time()
-    for i, (code, name) in enumerate(codes, 1):
-        stats["codes"] += 1
+    for i, code in enumerate(codes, 1):
         body = fetch_sise(code, start=args.start)
         rows = parse_sise(body, code) if body else []
         if not rows:
-            stats["empty"] += 1
+            empty += 1
         else:
-            stats["with_data"] += 1
-            stats["in_window"] += 1
-            stats["rows"] += len(rows)
+            rows_seen += len(rows)
             if not args.dry_run:
-                stats["written"] += _insert_bars(con, rows)
+                written += _insert_bars(con, rows)
         if i % 100 == 0 or i == len(codes):
             el = time.time() - t0
             rate = i / el if el else 0
-            print(f"  [{i}/{len(codes)}] 데이터있음={stats['with_data']} 없음={stats['empty']} "
-                  f"행={stats['rows']:,} 기록={stats['written']:,} "
+            print(f"  [{i}/{len(codes)}] 데이터있음={i - empty} 없음={empty} "
+                  f"행={rows_seen:,} 기록={written:,} "
                   f"| {rate:.1f}종목/s ETA {(len(codes)-i)/rate/60 if rate else 0:.1f}분",
                   flush=True)
         time.sleep(args.sleep)
 
     con.close()
-    print(f"DONE {stats}")
+    print(f"DONE codes={len(codes)} 데이터있음={len(codes) - empty} 없음={empty} "
+          f"행={rows_seen} 기록={written}")
     return 0
 
 
