@@ -4,8 +4,8 @@
 TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collectors/`)과
 스케줄링(`dags/`)을 모두 이 저장소가 자체 보유한다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG, 매일 증분 + 주간 깊이 재수집
-- **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스)
+- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG, 매일 증분 + 주간 깊이 재수집
+- **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
 ---
@@ -103,8 +103,8 @@ docker compose up -d
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(`--multi-batch`, resume) |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집 |
 | `weekly_listed_shares` | 월 10:10 | 키움 상장주식수 스냅샷 |
-| `weekly_price_adjust` | 토 10:05 | `daily_bars_adjusted`(액면분할 백조정) 재생성 |
-| `weekly_delisted_stocks` | 토 10:15 | KRX 상장폐지종목(생존편향 보정) |
+| `weekly_delisted_stocks` | 토 10:05 | KRX 상장폐지종목 마스터 + **그 종목들의 과거 일봉 백필**(생존편향 보정) |
+| `weekly_price_adjust` | 토 10:40 | `daily_bars_adjusted`(액면분할 백조정) 재생성 — delisted 뒤에 돌아야 새 폐지분이 당주에 반영된다 |
 
 > **신뢰성** — 모든 DAG 태스크에 재시도를 걸어 두었다. 외부 API·수집 DAG는
 > `retries=1, retry_delay=10분`, 전체 이력 백필은 `retries=2, 30분`이다. 일시적
@@ -122,7 +122,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 
 | 테이블 | 내용 |
 |---|---|
-| `daily_bars` | 일봉 OHLCV + 거래대금 |
+| `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
 | `daily_bars_adjusted` | 액면분할 백조정 일봉(`weekly_price_adjust`가 매주 재생성) |
 | `supply_demand` | 투자자별 순매수(개인·외국인·기관 + 기관 세부 8종) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
@@ -137,12 +137,12 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 |---|---|
 | `stocks` | 종목 마스터(코드·이름·시장·섹터) |
 | `earnings` | DART 분기 실적(순이익·매출·영업이익, 당기/전년동기), lookahead-safe `avail_date` + 정정 이력을 보존하는 `knowledge_date`(PK: code, period, knowledge_date) |
-| `delisted_stocks` | 상장폐지 종목(생존편향 보정) |
+| `delisted_stocks` | 상장폐지 종목 마스터(생존편향 보정). 과거 시세는 `daily_bars`에 `source='naver'`로 들어간다 |
 
 ## 저장소 구조
 
 ```
-dags/                  # 12개 DAG — run_collector()로 `python -m collectors.X` 실행
+dags/                  # 11개 DAG — run_collector()로 `python -m collectors.X` 실행
   _common.py           #   공유 헬퍼: timescale_dsn()/kiwoom_env()/dart_env()/run_collector()
 collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 없음)
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)
@@ -172,6 +172,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 | 마이그레이션 | 적용일 | 내용 |
 |---|---|---|
 | `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
+| `002_daily_bars_source` | 2026-08-15 | `daily_bars.source` 추가 — 폐지 종목 시세를 네이버에서 받으면서 행별 출처를 남긴다(거래대금이 실측/근사로 갈림) |
 
 > ⚠️ 001은 코드(`collectors/storage.py`)가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이
 > `daily_earnings`가 초록불이었던 건 비수기라 `rows=0`이어서 DB를 건드리기 전에 빠져나갔기

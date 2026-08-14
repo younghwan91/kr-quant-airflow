@@ -41,9 +41,12 @@ from _common import run_collector, timescale_dsn
 
 @dag(
     dag_id="weekly_price_adjust",
-    # 토요일 10:05 KST — 스택 기동(cron 0 10 * * *) 직후. 기존 05:00은 머신이
+    # 토요일 10:40 KST — 스택 기동(cron 0 10 * * *) 이후. 기존 05:00은 머신이
     # 꺼져 있는 시간이라(스택 가동 창 10:00~) 제 시각에 돌 수 없었다.
-    schedule="5 10 * * 6",
+    # 10:05 -> 10:40 (2026-08-15): weekly_delisted_stocks(10:05)가 새 폐지 종목
+    # 시세를 daily_bars 에 넣은 뒤에 조정가를 재생성해야 한다. 앞서 돌면 새 종목이
+    # daily_bars_adjusted 에 일주일 늦게 반영된다.
+    schedule="40 10 * * 6",
     start_date=pendulum.datetime(2026, 7, 12, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
