@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS stocks (
     kind   TEXT
 );
 
+-- source: 'kiwoom' = 상장 종목(ka10081, trade_value 는 보고된 거래대금),
+--         'naver'  = 상장폐지 종목 백필(siseJson, trade_value 는 close*volume/1e6 근사).
+-- 폐지 종목이 이 테이블에 들어오는 이유는 생존편향이다 — 수집 소스가 현재 상장 종목만
+-- 돌려주므로, 그냥 두면 백테스트가 살아남은 회사만 보고 성적을 잰다.
 CREATE TABLE IF NOT EXISTS daily_bars (
     code        TEXT NOT NULL,
     date        DATE NOT NULL,
@@ -21,6 +25,7 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     close       INTEGER,
     volume      BIGINT,
     trade_value BIGINT,
+    source      TEXT NOT NULL DEFAULT 'kiwoom',
     PRIMARY KEY (code, date)
 );
 -- 기본 7일 청크는 이 볼륨(~2,600종목×250거래일/년 ≈ 65만행/년)엔 과하게 잘게

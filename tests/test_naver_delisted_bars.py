@@ -86,3 +86,33 @@ def test_every_parsed_bar_is_internally_consistent():
 def test_empty_or_garbage_body_yields_nothing():
     for body in ("", "  ", "<html>error</html>", "[['날짜','시가']]"):
         assert parse_sise(body, "000020") == []
+
+
+def test_schema_has_source_and_upsert_preserves_existing(tmp_path):
+    """스키마에 source 가 있고, 백필이 기존 행을 덮지 않는지.
+
+    이 둘이 한 테스트인 이유: 컬럼이 빠지면 백필이 sqlite 신규 DB 에서 죽고
+    (실제로 마이그레이션만 넣고 CREATE TABLE 을 빠뜨려 그랬다), on_conflict 가
+    update 로 새면 키움 실측 거래대금이 네이버 근사치로 덮인다.
+    """
+    from collectors.naver_delisted_bars import DAILY_BAR_SOURCE_COLUMNS, _insert_bars
+    from collectors.storage import connect
+
+    con = connect(tmp_path / "t.db")
+    cols = DAILY_BAR_SOURCE_COLUMNS
+    assert cols[-1] == "source"
+
+    kiwoom = ("000020", "2020-01-02", 100, 110, 90, 105, 1000, 105, "kiwoom")
+    con.executemany(
+        f"INSERT INTO daily_bars({','.join(cols)}) VALUES({','.join(['?'] * len(cols))})",
+        [kiwoom])
+    con.commit()
+
+    naver = ("000020", "2020-01-02", 9, 9, 9, 9, 9, 9, "naver")
+    new_day = ("000020", "2020-01-03", 1, 2, 1, 2, 5, 1, "naver")
+    _insert_bars(con, [naver, new_day])
+
+    rows = dict(con.execute("SELECT date, source FROM daily_bars").fetchall())
+    assert rows["2020-01-02"] == "kiwoom", "기존 키움 행이 덮였다"
+    assert rows["2020-01-03"] == "naver", "새 날짜는 들어와야 한다"
+    con.close()
