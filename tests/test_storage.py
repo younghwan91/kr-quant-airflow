@@ -16,7 +16,6 @@ from collectors.storage import (
     connect,
     to_float,
     to_int,
-    upsert_daily_bars,
     upsert_earnings,
     upsert_stocks,
     upsert_supply_demand,

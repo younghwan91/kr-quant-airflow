@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 컨테이너는 apache/airflow:2.10.5-python3.11 을 쓴다(docker/Dockerfile).
+        # 3.12/3.13 도 함께 도는 이유: collectors/ 는 Airflow 없이 `python -m` 으로도
+        # 실행되는 순수 모듈이라, 런타임을 올릴 때 미리 깨지는 걸 보려는 것이다.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # 런타임 의존을 그대로 설치해 실제 컨테이너와 같은 집합을 검증한다.
+          pip install -r docker/requirements.txt
+          # ruff 는 핀한다 — 기본 룰셋이 릴리스마다 넓어져서, 코드를 안 건드려도
+          # CI 가 갑자기 빨개진다. pyproject 의 select 명시와 한 쌍이다.
+          pip install pytest 'ruff==0.14.0'
+
+      - name: Lint
+        run: ruff check collectors/ dags/ tests/ scripts/
+
+      - name: DAG 파싱
+        # DAG 파일이 문법·import 오류 없이 로드되는지. Airflow 를 설치하지 않으므로
+        # 실제 DagBag 대신 AST 파싱으로 확인한다 — 스케줄 오타나 깨진 import 를
+        # 배포 전에 잡는 최소 안전망.
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+          bad = []
+          for p in sorted(pathlib.Path("dags").glob("*.py")):
+              try:
+                  ast.parse(p.read_text())
+              except SyntaxError as e:
+                  bad.append(f"{p}: {e}")
+          print(f"{len(list(pathlib.Path('dags').glob('*.py')))} DAG 파일 파싱")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          PY
+
+      - name: Test
+        run: pytest -q

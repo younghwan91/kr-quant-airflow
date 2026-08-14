@@ -1,0 +1,14 @@
+# 이 레포는 배포되는 패키지가 아니다 — Airflow 컨테이너가 collectors/ 를 마운트해
+# `python -m collectors.X` 로 실행한다(런타임 의존은 docker/requirements.txt).
+# 이 파일은 **도구 설정 전용**이다: ruff 룰셋과 pytest 경로.
+
+[tool.ruff.lint]
+# 룰셋을 명시한다 — ruff 기본 선택은 릴리스마다 넓어지므로, 그대로 두면 코드를
+# 건드리지 않아도 CI가 갑자기 빨개진다(kr-quant 에서 0.16 때 실제 발생).
+# CI 의 ruff 버전 핀과 한 쌍이다.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 레포 루트를 sys.path 에 — 테스트가 `from collectors...` 로 import 한다.
+pythonpath = ["."]

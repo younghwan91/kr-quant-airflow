@@ -34,7 +34,6 @@ def test_upsert_delisted_stocks_round_trips_with_and_without_last_trade_date():
         ("999999", "이력없음", "KOSPI", None),  # daily_bars에 이력이 전혀 없던 종목
     ])
 
-    import sqlite3
     cur = con.cursor()
     cur.execute("SELECT code, name, market, last_trade_date FROM delisted_stocks ORDER BY code")
     rows = cur.fetchall()
