@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS delisted_stocks (
     name            TEXT,
     market          TEXT,
     last_trade_date TEXT,   -- daily_bars 기준 마지막 거래일(상장폐지일 근사), 이력 없으면 NULL
+    naver_checked   TEXT,   -- 네이버 조회했으나 우리 구간 내 데이터 없던 날(NULL=미확인)
     PRIMARY KEY (code)
 );
 """
@@ -266,7 +267,11 @@ def _upsert(
         )
         try:
             with con.cursor() as cur:
-                psycopg2.extras.execute_values(cur, sql, records)
+                # page_size 를 전체 길이로 — 기본값(100)이면 여러 문장으로 쪼개져
+                # cur.rowcount 가 마지막 배치만 반영한다.
+                psycopg2.extras.execute_values(
+                    cur, sql, records, page_size=max(len(records), 100))
+                affected = cur.rowcount
         except Exception:
             # A failed statement leaves the whole Postgres transaction aborted
             # until rolled back — without this, every later upsert on this
@@ -278,9 +283,12 @@ def _upsert(
         placeholders = ",".join(["?"] * len(cols))
         verb = "INSERT OR IGNORE" if on_conflict == "nothing" else "INSERT OR REPLACE"
         sql = f"{verb} INTO {table}({','.join(cols)}) VALUES({placeholders})"
-        con.executemany(sql, records)
+        cur = con.executemany(sql, records)
+        affected = cur.rowcount
     con.commit()
-    return len(records)
+    # DO NOTHING/IGNORE 에서는 실제 삽입 수가 len(records) 보다 적다. len 을 돌려주면
+    # "13,316행 기록"이라 보고해놓고 실제로는 0행인 일이 생긴다(실측).
+    return affected if on_conflict == "nothing" else len(records)
 
 
 def to_int(s: object) -> int:

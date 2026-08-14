@@ -35,7 +35,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .storage import DAILY_BAR_COLUMNS, _upsert, connect, default_db_path
+from .storage import DAILY_BAR_COLUMNS, _is_pg, _upsert, connect, default_db_path
 
 SISE_URL = "https://api.finance.naver.com/siseJson.naver"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -119,21 +119,53 @@ def _delisted_codes(con, *, refetch: bool = False) -> list[str]:
     뿐이다. ``refetch=True`` 면 전량 다시 받는다(구간을 늘려 재수집할 때).
 
     구간 밖(마지막 거래일 < HISTORY_START)도 뺀다 — 응답이 비어 있을 게 확실한데
-    요청 비용은 그대로 든다. ``last_trade_date`` 가 NULL 인 종목은 판단 근거가
-    없으므로 남긴다(그 컬럼은 daily_bars 에서 파생한 근사치다).
+    요청 비용은 그대로 든다. 다만 ``last_trade_date`` 는 daily_bars 에서 파생하므로
+    **애초에 바가 없는 코드는 전부 NULL** 이라 이 필터에 안 걸린다(실측: 1,758개 중
+    1,751개가 그렇게 남아 매주 빈 응답을 받았다). 그래서 한 번 조회해 구간 내 데이터가
+    없던 코드는 ``naver_checked`` 에 날짜를 남기고 다음부터 건너뛴다 — 상장폐지는 과거
+    사실이라 한 번 없으면 영원히 없다.
     """
     start_date = f"{HISTORY_START[:4]}-{HISTORY_START[4:6]}-{HISTORY_START[6:]}"
+    # 6자리 숫자 판정은 백엔드마다 다르다 — pg 는 POSIX 정규식, sqlite 는 GLOB.
+    six_digit = ("code ~ '^[0-9]{6}$'" if _is_pg(con)
+                 else "length(code) = 6 AND code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'")
     where = [
-        "code ~ '^[0-9]{6}$'",
+        six_digit,
         "market IN ('유가증권', '코스닥')",
         f"(last_trade_date IS NULL OR last_trade_date >= '{start_date}')",
     ]
     if not refetch:
         where.append("code NOT IN (SELECT DISTINCT code FROM daily_bars WHERE source = 'naver')")
+        where.append("naver_checked IS NULL")
     sql = f"SELECT code FROM delisted_stocks WHERE {' AND '.join(where)} ORDER BY code"  # noqa: S608 — 조건은 전부 모듈 상수
-    with con.cursor() as cur:
-        cur.execute(sql)
-        return [r[0] for r in cur.fetchall()]
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    else:
+        rows = con.execute(sql).fetchall()
+    return [r[0] for r in rows]
+
+
+def _mark_checked(con, codes: list[str], today: str) -> None:
+    """더 받을 게 없는 코드를 기록해 다음 회차부터 건너뛴다.
+
+    두 경우다: (1) 구간 내 데이터가 아예 없음, (2) 데이터는 있으나 전부 기존 행과
+    겹쳐 새로 쌓을 게 없음. (2)를 빼먹으면 그 코드는 ``source='naver'`` 행이 생기지
+    않아 제외 조건에도 안 걸리고 영원히 재조회된다(실측 7건).
+    """
+    if not codes:
+        return
+    ph = "%s" if _is_pg(con) else "?"
+    sql = (f"UPDATE delisted_stocks SET naver_checked = {ph} "  # noqa: S608 — 자리표시자만 조립
+           f"WHERE code IN ({','.join([ph] * len(codes))})")
+    params = (today, *codes)
+    if _is_pg(con):
+        with con.cursor() as cur:
+            cur.execute(sql, params)
+    else:
+        con.execute(sql, params)
+    con.commit()
 
 
 def _insert_bars(con, records: list[tuple]) -> int:
@@ -168,16 +200,25 @@ def main() -> int:
           f"{' | DRY-RUN' if args.dry_run else ''}")
 
     empty = rows_seen = written = 0
+    done_codes: list[str] = []
+    today = time.strftime("%Y-%m-%d")
     t0 = time.time()
     for i, code in enumerate(codes, 1):
         body = fetch_sise(code, start=args.start)
         rows = parse_sise(body, code) if body else []
         if not rows:
             empty += 1
+            # 응답 자체가 실패한 경우(body 빈 문자열)는 표시하지 않는다 — 일시적
+            # 네트워크 오류를 "데이터 없음"으로 굳히면 영영 다시 안 받는다.
+            if body:
+                done_codes.append(code)
         else:
             rows_seen += len(rows)
             if not args.dry_run:
-                written += _insert_bars(con, rows)
+                n = _insert_bars(con, rows)
+                written += n
+                if n == 0:
+                    done_codes.append(code)   # 전부 기존 행과 겹침 — 더 받을 게 없다
         if i % 100 == 0 or i == len(codes):
             el = time.time() - t0
             rate = i / el if el else 0
@@ -187,9 +228,11 @@ def main() -> int:
                   flush=True)
         time.sleep(args.sleep)
 
+    if not args.dry_run:
+        _mark_checked(con, done_codes, today)
     con.close()
     print(f"DONE codes={len(codes)} 데이터있음={len(codes) - empty} 없음={empty} "
-          f"행={rows_seen} 기록={written}")
+          f"행={rows_seen} 기록={written} 완료표시={len(done_codes) if not args.dry_run else 0}")
     return 0
 
 

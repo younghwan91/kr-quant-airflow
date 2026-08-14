@@ -173,6 +173,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 |---|---|---|
 | `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
 | `002_daily_bars_source` | 2026-08-15 | `daily_bars.source` 추가 — 폐지 종목 시세를 네이버에서 받으면서 행별 출처를 남긴다(거래대금이 실측/근사로 갈림) |
+| `004_delisted_naver_checked` | 2026-08-15 | `delisted_stocks.naver_checked` 추가 — 네이버에 구간 내 데이터가 없거나 이미 다 받은 코드를 표시해 주간 재조회를 막는다(실측 주간 1,758회 → 0회) |
 | `003_daily_bars_adjusted_source` | 2026-08-15 | `daily_bars_adjusted.source` 추가 — 002 의 짝. 백테스트가 읽는 건 조정가 테이블이라 거기까지 전파돼야 근사 거래대금을 식별할 수 있다. **적용 후 `python -m kr_quant.price_adjust --rebuild-db` 로 재생성해야 기존 행이 채워진다** |
 
 > ⚠️ 001은 코드(`collectors/storage.py`)가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이

@@ -116,3 +116,48 @@ def test_schema_has_source_and_upsert_preserves_existing(tmp_path):
     assert rows["2020-01-02"] == "kiwoom", "기존 키움 행이 덮였다"
     assert rows["2020-01-03"] == "naver", "새 날짜는 들어와야 한다"
     con.close()
+
+
+def test_empty_probe_is_recorded_so_next_run_skips_it(tmp_path):
+    """구간 내 데이터가 없던 코드를 기록해 매주 다시 조회하지 않는지.
+
+    상장폐지는 과거 사실이라 한 번 없으면 영원히 없다. 기록하지 않으면 주간 DAG 가
+    매번 ~1,750회의 빈 요청을 보낸다(실측).
+    """
+    from collectors.naver_delisted_bars import _delisted_codes, _mark_checked
+    from collectors.storage import connect
+
+    con = connect(tmp_path / "t.db")
+    con.executemany(
+        "INSERT INTO delisted_stocks(code, name, market) VALUES(?,?,?)",
+        [("000020", "A", "코스닥"), ("000030", "B", "코스닥")])
+    con.commit()
+
+    assert set(_delisted_codes(con)) == {"000020", "000030"}
+
+    _mark_checked(con, ["000020"], "2026-08-15")
+    assert _delisted_codes(con) == ["000030"], "확인된 코드는 다음 회차에서 빠져야 한다"
+    assert set(_delisted_codes(con, refetch=True)) == {"000020", "000030"}, \
+        "--refetch 는 전량 복원해야 한다"
+    con.close()
+
+
+def test_insert_reports_actual_rows_not_attempted(tmp_path):
+    """DO NOTHING 에서 '기록' 수가 실제 삽입 수여야 한다.
+
+    len(records) 를 돌려주면 "13,316행 기록"이라 보고해놓고 실제로는 0행인 일이
+    생긴다(실측). 그 수를 보고 "더 받을 게 없다"를 판단하므로 틀리면 재조회가 영영
+    끝나지 않는다.
+    """
+    from collectors.naver_delisted_bars import DAILY_BAR_SOURCE_COLUMNS, _insert_bars
+    from collectors.storage import connect
+
+    con = connect(tmp_path / "t.db")
+    rows = [("000020", "2020-01-02", 1, 2, 1, 2, 5, 1, "naver"),
+            ("000020", "2020-01-03", 1, 2, 1, 2, 5, 1, "naver")]
+    assert len(DAILY_BAR_SOURCE_COLUMNS) == len(rows[0])
+
+    assert _insert_bars(con, rows) == 2, "신규 2행"
+    assert _insert_bars(con, rows) == 0, "전부 중복이면 0이어야 한다"
+    assert _insert_bars(con, [*rows, ("000020", "2020-01-06", 1, 2, 1, 2, 5, 1, "naver")]) == 1
+    con.close()
