@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     close       DOUBLE PRECISION,
     volume      BIGINT,            -- 미조정 원본 그대로(adjust_volume=False 기본값)
     trade_value BIGINT,
+    source      TEXT NOT NULL DEFAULT 'kiwoom',  -- daily_bars.source 전파(근사 거래대금 식별)
     PRIMARY KEY (code, date)
 );
 SELECT create_hypertable('daily_bars_adjusted', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');

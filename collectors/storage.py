@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS daily_bars_adjusted (
     close       REAL,
     volume      INTEGER,      -- 기본은 미조정 원본 거래량 그대로(adjust_volume=False)
     trade_value INTEGER,      -- 거래대금은 가격조정과 무관(가격×수량이 아니라 원 보고값)
+    source      TEXT NOT NULL DEFAULT 'kiwoom',  -- daily_bars.source 전파(근사 거래대금 식별)
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_dba_date ON daily_bars_adjusted(date);

@@ -123,7 +123,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 | 테이블 | 내용 |
 |---|---|
 | `daily_bars` | 일봉 OHLCV + 거래대금. `source`='kiwoom'(상장 종목) / 'naver'(폐지 종목 백필 — 거래대금은 close×volume 근사) |
-| `daily_bars_adjusted` | 액면분할 백조정 일봉(`weekly_price_adjust`가 매주 재생성) |
+| `daily_bars_adjusted` | 액면분할 백조정 일봉(`weekly_price_adjust`가 매주 재생성). `source`는 `daily_bars`에서 전파 |
 | `supply_demand` | 투자자별 순매수(개인·외국인·기관 + 기관 세부 8종) |
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
@@ -173,6 +173,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 |---|---|---|
 | `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
 | `002_daily_bars_source` | 2026-08-15 | `daily_bars.source` 추가 — 폐지 종목 시세를 네이버에서 받으면서 행별 출처를 남긴다(거래대금이 실측/근사로 갈림) |
+| `003_daily_bars_adjusted_source` | 2026-08-15 | `daily_bars_adjusted.source` 추가 — 002 의 짝. 백테스트가 읽는 건 조정가 테이블이라 거기까지 전파돼야 근사 거래대금을 식별할 수 있다. **적용 후 `python -m kr_quant.price_adjust --rebuild-db` 로 재생성해야 기존 행이 채워진다** |
 
 > ⚠️ 001은 코드(`collectors/storage.py`)가 먼저 나가고 DB 적용이 3일 늦었다. 그 사이
 > `daily_earnings`가 초록불이었던 건 비수기라 `rows=0`이어서 DB를 건드리기 전에 빠져나갔기
