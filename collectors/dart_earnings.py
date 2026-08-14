@@ -286,6 +286,7 @@ def collect_all_financials_batched(
     batch_size: int = MULTI_BATCH_SIZE,
     done_periods: set[tuple[str, str]] | None = None,
     today: str | None = None,
+    knowledge_date: str = "today",
 ) -> "list[tuple[str, str, str, float | None, float | None, float | None, float | None, float | None, float | None]]":
     """Collect every (code, period) via ``fnlttMultiAcnt`` batches of ``batch_size``.
 
@@ -300,6 +301,16 @@ def collect_all_financials_batched(
         batch_size: Companies per call (frozen at the DART-documented cap of 100).
         done_periods: ``{(code, period)}`` already collected — skipped (resume support).
         today: ``YYYYMMDD`` for the avail_date look-ahead guard (defaults to now).
+        knowledge_date: ``"today"`` (기본) 또는 ``"avail"``.
+
+            일간 수집에서는 ``today`` 가 맞다 — 그 값을 실제로 오늘 알게 됐고,
+            정정공시라면 새 버전으로 쌓여야 한다.
+
+            **과거 백필에는 ``avail`` 을 써야 한다.** 오래전에 공시돼 계속 공개돼
+            있던 값을 이제서야 수집하는 경우, ``today`` 를 박으면 "2026년에 알게 된
+            2018년 실적"이 되어 ``knowledge_date <= asof`` 로 읽는 과거 시점
+            백테스트에서 **통째로 안 보인다**. migration 001 이 기존 행을
+            ``knowledge_date = avail_date`` 로 채운 것과 같은 규약이다.
 
     Returns:
         Rows ready for :func:`.storage.upsert_earnings` — one per
@@ -325,7 +336,8 @@ def collect_all_financials_batched(
                 ni, nip, rev, revp, oi, oip = result[cc]
                 if ni is None:
                     continue
-                rows.append((sc, period, avail, today, ni, nip, rev, revp, oi, oip))
+                kd = avail if knowledge_date == "avail" else today
+                rows.append((sc, period, avail, kd, ni, nip, rev, revp, oi, oip))
             time.sleep(sleep)
         print(f"[{period}] 누적 rows={len(rows)}", flush=True)
     return rows
@@ -415,6 +427,9 @@ def main() -> int:
     ap.add_argument("--sleep", type=float, default=0.25)
     ap.add_argument("--db-table", action="store_true", help="CSV 대신 earnings 테이블에 직접 upsert")
     ap.add_argument("--all-codes", action="store_true", help="유동성 상위 N 대신 daily_bars 전종목 사용")
+    ap.add_argument("--knowledge-date", choices=("today", "avail"), default="today",
+                    help="수집분의 knowledge_date. 일간 수집=today(기본), "
+                         "과거 백필=avail (안 그러면 과거 as-of 조회에서 안 보임)")
     ap.add_argument("--recent-quarters", type=int, default=None,
                     help="전체 이력 대신 최근 N개 분기만 수집 (현재+직전, 일일 증분용)")
     ap.add_argument("--multi-batch", action="store_true",
@@ -462,7 +477,8 @@ def main() -> int:
         corp_universe = {sc: cc for sc, cc in corp.items() if sc in set(codes)}
         rows = collect_all_financials_batched(
             keys, corp_universe, periods, sleep=args.sleep,
-            done_periods=done_periods, today=today)
+            done_periods=done_periods, today=today,
+            knowledge_date=args.knowledge_date)
         from .storage import upsert_earnings
         upsert_earnings(con, rows)
         con.close()
