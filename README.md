@@ -4,16 +4,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
 
-한국 주식(코스피·코스닥)의 **시세·수급·실적·컨센서스**를 매일 자동으로 수집해
-TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collectors/`)과
-스케줄링(`dags/`)을 모두 이 저장소가 자체 보유한다.
+퀀트 리서치용 시장 데이터를 매일 자동으로 수집·적재하는 Airflow 파이프라인이다.
+**한국 주식**(코스피·코스닥)의 시세·수급·실적·컨센서스를 TimescaleDB에 쌓고,
+**미국 주식**(Sharadar)은 벤더 벌크 스냅샷으로 DuckDB 스토어를 매일 재구축한다.
+수집 로직(`collectors/`)과 스케줄링(`dags/`)을 모두 이 저장소가 자체 보유한다.
 
 **상장폐지 종목까지 담는다.** 대부분의 수집기는 "현재 상장된 종목" 목록 위를 도므로
 망한 회사가 통째로 빠지고, 그 데이터로 만든 백테스트는 살아남은 회사만 보고 성적을
 잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
 (`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG(1개 paused), 매일 증분 + 주간 깊이 재수집
+- **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG(1개 paused), 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
@@ -57,17 +58,33 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 
 ## 아키텍처
 
+데이터가 둘이고, **적재 방식이 서로 다르다.** 한국은 소스 API가 증분만 주므로
+DB에 직접 upsert하고, 미국(Sharadar)은 벤더가 전체 스냅샷을 주므로 파일을 새로
+지어 통째로 갈아끼운다.
+
 ```
-spare PC (Ubuntu, 이 레포)                        main PC
-┌─────────────────────────────────┐
-│ Airflow (LocalExecutor)          │
-│   dags/*.py                      │
-│    └─ subprocess -m collectors.X │          ┌───────────────┐
-│        → TimescaleDB 직접 upsert  │◄─────────│  분석/백테스트  │
-│                                   │   psql   │   (kr-quant)   │
-│ TimescaleDB (5432, LAN 오픈)      │          └───────────────┘
-└─────────────────────────────────┘
+spare PC (Ubuntu, 이 레포)                                  main PC
+┌──────────────────────────────────────────────┐
+│ Airflow (LocalExecutor)  dags/*.py            │
+│                                                │
+│  ── 한국 ────────────────────────────────      │
+│   -m collectors.X  ──upsert──►  TimescaleDB   │◄──psql───┐
+│                                  (5432, LAN)   │          │
+│                                                │     ┌────┴─────┐
+│  ── 미국 (Sharadar) ─────────────────────      │     │ 분석/백테 │
+│   -m collectors.sharadar_bulk                  │     │  kr-quant │
+│        │ bulk zip (modified 바뀐 것만)          │     │ opt_portfolio│
+│        ▼                                       │     └────┬─────┘
+│   sharadar/raw/  ──►  -m collectors.sharadar_build        │
+│                            │ build → gate      │          │
+│                            ▼ os.replace        │          │
+│                       us_micro.duckdb          │◄──file───┘
+└──────────────────────────────────────────────┘
 ```
+
+미국 쪽 화살표가 `os.replace`인 게 핵심이다 — 연구가 스토어를 열고 있는 중에
+배포해도 충돌하지 않는다(기존 리더는 옛 inode를 계속 읽는다). DuckDB는 단일
+라이터라, 직접 upsert하면 연구와 수집이 상시 서로를 막는다.
 
 머신 가동은 cron이 관리한다. 매일 10:00에 스택을 올리고, 그날 예정된 DAG가 모두
 끝나면 `scripts/wait_and_stop.sh`가 스택을 조기 종료한다(22:00 안전장치 포함). 모든
@@ -122,6 +139,53 @@ docker compose up -d
 > **신용잔고 한계** — 키움 API가 최근 100 거래일까지만 제공하므로, 그보다 깊은
 > 신용잔고 히스토리는 채울 수 없다.
 
+**미국(Sharadar) — 이 레포에서 유일한 비한국 파이프라인**
+
+| DAG | 스케줄(KST) | 하는 일 |
+|---|---|---|
+| `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개 |
+
+한국 파이프라인과 스케줄러·인프라를 공유한다 — 레포가 `quant-airflow`인 이유다.
+설계 근거는
+[`docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md`](docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md).
+
+**증분이 아니라 재구축이다.** 처음엔 API 증분(종목 22,000개를 30개씩 ~730회
+순회)으로 만들었다가 실측에서 버렸다 — 벤더 티커 제한이 개수(30)가 아니라
+**문자열 200자**라 우선주 티커 30개면 무조건 `400`이었고(fundamentals 매번 실패),
+소켓 타임아웃이 재시도되지 않아 70분짜리 작업이 딸꾹질 한 번에 전멸했으며,
+스토어를 직접 upsert 하므로 연구(`opt-factor optimize`)와 DuckDB 락이 충돌했다.
+
+벌크는 테이블당 요청 1회라 앞의 둘이 해당 없고, **새 파일에 지어 `os.replace`로
+갈아끼우므로** 셋째도 사라진다 — 연구가 도는 중에 배포해도 기존 리더는 옛 inode를
+계속 안전하게 읽는다.
+
+```
+① RAW      /opt/us-data/sharadar/raw/  ← 벤더 `modified` 가 그대로면 안 받는다
+② BUILD    raw → .us_micro.duckdb.building   (검증된 --provider csv 경로 재사용)
+③ GATE     테이블 결측·0행·행수 5% 이상 감소면 공개 중단
+④ PUBLISH  os.replace → us_micro.duckdb   (직전 2세대는 .prev* 로 보존)
+```
+
+- **수집 로직은 이 레포에 없다.** `opt_portfolio`(sibling)의 `opt-factor ingest`를
+  부른다 — `weekly_price_adjust`가 kr-quant를 쓰는 것과 같은 구조(ro 마운트 +
+  `PYTHONPATH`, pip install 없음). `_csv_daily`(백만달러 환산)·`_csv_tickers`
+  (`is_delisted` 리네임)·`_csv_fundamentals`(PIT 위반 제외)는 실제 버그에서 나온
+  코드라 **DuckDB SQL로 재구현하지 않는다**(동등성 테스트 없이는 금지).
+- **스토어**: `~/data/us_micro.duckdb`(2.7GB, 컨테이너에선 `/opt/us-data/`).
+  가격 21,963종목·4,630만행, 1997~. 폐지 종목 포함. 경로는 `.env`의 `US_DATA_DIR`.
+- **17:30인 이유**: 벤더가 테이블마다 다른 시각에 올린다(실측 KST) — holdings_ticker
+  01:39, insiders 09:48, daily 12:56, **stocks(주가) 16:40**, fundamentals 16:49,
+  funds 16:54. 가장 늦은 16:54 뒤로 여유를 둔 값이다. 화~토인 건 미국 장이
+  없는 날엔 새로 받을 게 없어서다(금요일 세션은 토요일 드롭에 실려 온다).
+  ⚠️ 토요일은 이 DAG 때문에 스택이 10:40 대신 18:15까지 뜬다.
+- **실측 소요**: 다운로드 3.0GB를 7분 42초(실측 7.2MB/s) — `modified` 스킵으로
+  평시엔 훨씬 적다. 빌드는 전체 약 45분(실측: SEP 4,626만 행 10.6분, DAILY 4,007만 행 28.7분). `wait_and_stop.sh`가
+  실행 중인 런을 기다리므로 잘리지 않는다(22:00 안전장치).
+- **아직 스토어에 안 들어가는 것**: funds(SFP)·holdings(SF3)·holdings_investor
+  (SF3B)·events. 구독분이라 raw 아카이브에는 받아두지만, `opt_portfolio`에 테이블이
+  없어 적재는 못 한다. `metrics`는 종목당 1행 최신 스냅샷뿐이라(히스토리 없음)
+  백테스트에 쓰면 look-ahead다.
+
 ## 데이터 스키마
 
 전체 정의는 [`sql/init_timescale.sql`](sql/init_timescale.sql)에 있다. 시계열 테이블은
@@ -151,7 +215,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 ## 저장소 구조
 
 ```
-dags/                  # 11개 DAG — run_collector()로 `python -m collectors.X` 실행
+dags/                  # 12개 DAG — run_collector()로 `python -m collectors.X` 실행
   _common.py           #   공유 헬퍼: timescale_dsn()/kiwoom_env()/dart_env()/run_collector()
 collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 없음)
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)

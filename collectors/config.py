@@ -80,3 +80,14 @@ def mask_dsn(dsn: str | None) -> str:
     실측), 터미널 스크롤백/CI 로그에도 남는다.
     """
     return _DSN_RE.sub(lambda m: f"{m['head']}***{m['tail']}", str(dsn or ""))
+
+
+# `api_key=` / `apikey=` / `token=` 를 쿼리스트링에서 가린다. Sharadar 직판은 키를
+# URL 파라미터로 받는데, requests 의 HTTPError 메시지가 `resp.url` 을 통째로
+# 담으므로 4xx/5xx 한 번이면 트레이스백에 키가 평문으로 남는다.
+_QUERY_SECRET_RE = re.compile(r"(?i)\b(api_?key|token)=([^&\s\"']+)")
+
+
+def mask_secrets(text: str | None) -> str:
+    """로그로 흘려보내기 전 DSN 비밀번호와 URL 쿼리의 API 키를 함께 가린다."""
+    return _QUERY_SECRET_RE.sub(lambda m: f"{m[1]}=***", mask_dsn(text))

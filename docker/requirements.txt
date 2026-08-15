@@ -1,3 +1,20 @@
 psycopg2-binary>=2.9
 kiwoom-client>=0.1.14
 pandas>=2.0
+
+# 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서
+# import 해 돌리므로(daily_sharadar), 그쪽 런타임 의존을 여기에 갖춰야 한다.
+# opt_portfolio 자체는 설치하지 않는다(ro 마운트 + PYTHONPATH, kr-quant 와 동일).
+#
+# matplotlib/yfinance 는 ingest 와 무관해 보이지만 뺄 수 없다 — opt_portfolio 의
+# 최상위 `__init__.py` 가 analysis.backtest 를 즉시 import 하고 그게 pyplot 을
+# 끌어온다. 즉 `factor.cli` 하나만 쓰려 해도 패키지 전체가 로드된다(실측:
+# ModuleNotFoundError: matplotlib). opt_portfolio 쪽을 지연 import 로 고치면
+# 여기서 뺄 수 있다.
+duckdb>=1.5.5
+scipy>=1.10.0
+tenacity>=9.1.4
+requests>=2.32
+matplotlib>=3.10
+yfinance>=0.2.30
+python-dateutil>=2.8.2
