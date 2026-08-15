@@ -4,6 +4,11 @@
 TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collectors/`)과
 스케줄링(`dags/`)을 모두 이 저장소가 자체 보유한다.
 
+**상장폐지 종목까지 담는다.** 대부분의 수집기는 "현재 상장된 종목" 목록 위를 도므로
+망한 회사가 통째로 빠지고, 그 데이터로 만든 백테스트는 살아남은 회사만 보고 성적을
+잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
+(`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
+
 - **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG, 매일 증분 + 주간 깊이 재수집
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
@@ -29,7 +34,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 
 *수집 로직이 왜 분석 레포가 아니라 이곳에 있는가*
 
-| | kr-quant-airflow (이 레포, public) | [kr-quant](https://github.com/younghwan91/kr-quant) (private) |
+| | kr-quant-airflow (이 레포) | [kr-quant](https://github.com/younghwan91/kr-quant) |
 |---|---|---|
 | **역할** | 데이터 **수집·적재·스케줄링** | 전략·피처 **분석** (백테스트, PEAD 등) |
 | **DB 접근** | 쓰기 (수집기가 upsert) | 읽기 전용 |
@@ -39,7 +44,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 
 1. **사고 방지** — 분석 세션에서 실수로 수집기를 직접 실행해 DB 정합성이 깨지는
    일을 막는다. 분석(kr-quant)과 수집(이 레포)은 완전히 분리된 프로세스이자 저장소다.
-2. **오픈소스 공유** — 수집 로직을 공개한다. `collectors/`는 `kr_quant` 패키지에
+2. **오픈소스 공유** — 두 저장소 모두 공개다. 수집(이 레포)과 분석(kr-quant)을 나눠 각각 독립적으로 읽히게 한다. `collectors/`는 `kr_quant` 패키지에
    대한 런타임 의존이 전혀 없다(자체 `collectors/storage.py`·`collectors/config.py`를 갖는다).
 
 > **예외** — kr-quant는 여전히 `/opt/kr-quant`에 읽기 전용으로 마운트된다.
@@ -148,10 +153,12 @@ collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 
   storage.py           #   스키마 + upsert 전체 (sqlite/Postgres 듀얼 백엔드)
   config.py            #   자격증명 로딩 + 키움 클라이언트 생성 + DSN 마스킹
   {daily_bars,supply_demand,short_credit,...}.py   # 소스별 수집기
+  naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
 scripts/
   wait_and_stop.sh     # 그날 DAG 전부 끝나면 스택 조기 종료 (22:00 안전장치)
   sync_to_timescale.py # sqlite → TimescaleDB 증분 upsert (레거시 경로)
-sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책
+sql/init_timescale.sql # hypertable 스키마 + 청크/압축 정책 (신규 DB용)
+sql/migrations/        # 기존 DB 변경분 — 001~004, README "스키마 마이그레이션" 참고
 docker/Dockerfile      # collectors/ 의존성만 설치 (kr-quant editable install 없음)
 docker-compose.yml     # Airflow(web/scheduler) + Airflow 메타 Postgres + TimescaleDB
 ```
@@ -240,7 +247,7 @@ TimescaleDB 접속 정보(`TIMESCALE_*`)는 LAN 내부용이라 평문 컨테이
 | **[kiwoom-rest-api](https://github.com/younghwan91/kiwoom-rest-api)** | 키움증권 REST API Python 라이브러리 — 207개 엔드포인트 + 실시간 WebSocket |
 | **[krx-fundamentals-api](https://github.com/younghwan91/krx-fundamentals-api)** | 국내 기업 펀더멘탈 REST API — 재무제표·투자지표·배당·종목 스크리닝 (DART + KRX + 네이버) |
 | **[krx-news-rest-api](https://github.com/younghwan91/krx-news-rest-api)** | 한국 주식 뉴스·공시 수집 REST API (FastAPI + Redis) |
-| **[kr-quant](https://github.com/younghwan91/kr-quant)** | 코스피·코스닥 알파 리서치 — walk-forward·랜덤 음성대조를 강제하는 검증 가드레일 |
+| **[kr-quant](https://github.com/younghwan91/kr-quant)** | 코스피·코스닥 알파 리서치 — walk-forward·랜덤 음성대조·purged CV·Deflated Sharpe를 CI로 강제하는 검증 가드레일 |
 | **[quantbox-engine](https://github.com/younghwan91/quantbox-engine)** | 암호화폐 선물 백테스트·실행 엔진 — 룩어헤드 0, 백테스트↔실거래 일체화 |
 | **[opt_portfolio](https://github.com/younghwan91/opt_portfolio)** | VAA 기반 전술적 자산배분 백테스트·운용 시스템 |
 | **[automated-stock-trading-systems](https://github.com/younghwan91/automated-stock-trading-systems)** | Bensdorp의 7개 비상관 트레이딩 시스템 백테스터 (교육용 재구현) |
