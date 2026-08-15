@@ -145,8 +145,8 @@ docker compose up -d
 |---|---|---|
 | `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개 |
 
-한국 파이프라인과 스케줄러를 공유한다(레포를 `kr-quant-airflow` → `quant-airflow`로
-개명한 이유다). 설계 근거는
+한국 파이프라인과 스케줄러·인프라를 공유한다 — 레포가 `quant-airflow`인 이유다.
+설계 근거는
 [`docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md`](docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md).
 
 **증분이 아니라 재구축이다.** 처음엔 API 증분(종목 22,000개를 30개씩 ~730회

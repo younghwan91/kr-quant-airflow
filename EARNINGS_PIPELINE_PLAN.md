@@ -5,7 +5,7 @@
 > 지금은 해당 없음.
 
 > **대상:** 실적(DART) 수집 파이프라인을 담당할 다른 터미널의 에이전트.
-> **범위:** kr-quant `collectors/dart_earnings.py`·`storage.py` + kr-quant-airflow DAG.
+> **범위:** kr-quant `collectors/dart_earnings.py`·`storage.py` + quant-airflow DAG.
 > (SEPA 실험 모델링 — `strategies/minervini_*`, `features/*`, 하니스 — 은 **본 세션이 계속 담당**하니 건드리지 말 것.)
 > **목표:** 실적을 **전종목(~2,600) · TimescaleDB · 매일 증분**으로, 다른 데이터(일봉·수급)와 동일 파이프라인에 편입.
 
@@ -23,9 +23,9 @@
   - `collect_keys()` + `_fetch_with_rotation(keys, ki, ...)`: **다중키 로테이션 완료** — DART_API_KEY[_2/_3/_4]를 순차, status 020(일한도) 시 다음 키. 실효 40k콜/일. (테스트 있음: `tests/test_dart_earnings.py`)
   - `main()`: 현재 **CSV append** + **코드단위 resume**(done 세트) + top-N 유니버스(daily_bars AVG(trade_value)).
   - `available_date`(fundamentals) 기반 lookahead-safe avail_date. 미래 분기 스킵.
-- kr-quant-airflow `dags/weekly_earnings.py`: 주간 CSV **전체재수집(tmp→원자적 교체)**. DART 키는 Fernet Variable→subprocess 주입(Kiwoom 패턴). `.env.example`·`docker-compose.yml`에 DART_API_KEY[_2] 슬롯·시딩 배선 완료. **두 키 Variable 시딩됨**(컨테이너에 DART_API_KEY, DART_API_KEY_2 존재, 둘 다 status 000 검증).
+- quant-airflow `dags/weekly_earnings.py`: 주간 CSV **전체재수집(tmp→원자적 교체)**. DART 키는 Fernet Variable→subprocess 주입(Kiwoom 패턴). `.env.example`·`docker-compose.yml`에 DART_API_KEY[_2] 슬롯·시딩 배선 완료. **두 키 Variable 시딩됨**(컨테이너에 DART_API_KEY, DART_API_KEY_2 존재, 둘 다 status 000 검증).
 - **진행 중 백필**: `airflow tasks test weekly_earnings collect_earnings`가 top-500·2018~을 `/opt/kr-quant/data/earnings_financials.csv`(호스트 `data/earnings_financials.csv`)로 수집 중. **완주시켜 SEPA 하니스 즉시검증용으로 쓰면 됨** — 곧 DB가 대체.
-- 인프라: TimescaleDB 컨테이너 `kr-quant-airflow-timescaledb-1`(localhost:5432, healthy), daily_bars 518만행(2016-09~2026-07). DSN은 airflow `.env`의 TIMESCALE_* 또는 컨테이너 env(TIMESCALE_HOST 등). kr-quant repo는 컨테이너 `/opt/kr-quant`에 마운트(코드 즉시 반영).
+- 인프라: TimescaleDB 컨테이너 `quant-airflow-timescaledb-1`(localhost:5432, healthy), daily_bars 518만행(2016-09~2026-07). DSN은 airflow `.env`의 TIMESCALE_* 또는 컨테이너 env(TIMESCALE_HOST 등). kr-quant repo는 컨테이너 `/opt/kr-quant`에 마운트(코드 즉시 반영).
 
 ## 목표 아키텍처 (구현할 것)
 

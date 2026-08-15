@@ -2,9 +2,7 @@
 
 **이 레포에서 유일한 비(非)한국 DAG다.** 이 머신에서 살아 있는 스케줄러가
 여기뿐이라 미국 데이터도 여기서 돈다 — 레포를 kr-quant-airflow 에서
-quant-airflow 로 개명한 이유다. 다만 compose 프로젝트명은 kr-quant-airflow 로
-고정돼 있다(볼륨명이 거기서 유도되므로) — 컨테이너 이름은 여전히
-kr-quant-airflow-* 다.
+quant-airflow 로 개명한 이유다.
 
 설계 근거: `docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md`
 
