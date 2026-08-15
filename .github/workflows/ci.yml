@@ -81,6 +81,12 @@ jobs:
                   # `...:${AIRFLOW_META_PASSWORD}@...` 가 DSN 패턴에 걸린다.
                   if "${" in line:
                       continue
+                  # 마스킹을 검증하려면 테스트에 가짜 시크릿이 있어야 한다.
+                  # 표식을 그 줄에 직접 달게 해서, 예외가 파일 단위가 아니라
+                  # 한 줄 단위로만 열리게 한다 — tests/ 를 통째로 제외하면
+                  # 진짜 사고도 같이 놓친다.
+                  if "allowlist-secret" in line:
+                      continue
                   for pattern, why in PATTERNS:
                       if pattern.search(line):
                           hits.append(f"{path}:{line_no}: {why}")

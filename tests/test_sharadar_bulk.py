@@ -149,7 +149,8 @@ def test_masking_still_covers_dsn_passwords():
     """기존 DSN 마스킹을 깨지 않았는지 — 콜렉터 전체가 이 경로를 공유한다."""
     from collectors.config import mask_secrets
 
-    masked = mask_secrets("💾 postgresql://airflow:hunter2@timescaledb:5432/quant")
+    fake = "💾 postgresql://airflow:hunter2@timescaledb:5432/quant"  # allowlist-secret
+    masked = mask_secrets(fake)
 
     assert "hunter2" not in masked
     assert "timescaledb:5432/quant" in masked
