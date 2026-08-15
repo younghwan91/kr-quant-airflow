@@ -105,19 +105,6 @@ def build_sd_records(code: str, resp: dict, cutoff: str) -> list[tuple]:
     return records
 
 
-# ⚠️ 2026-08-15 실측: 이 함수는 **현재 깨져 있다.** kiwoom-client 의
-# ``_build_headers`` 시그니처가 ``(api_id, token, cont_yn, next_key, extra_headers)``
-# 로 바뀌었는데 아래 호출은 옛 순서 ``("ka10059", cont_yn, next_key, None)`` 그대로다
-# → token 자리에 "N" 이 들어가고 next_key=None 이 헤더 값이 되어
-# ``AttributeError: 'NoneType' object has no attribute 'encode'`` 로 죽는다.
-#
-# 프로덕션이 안 터진 이유: **어떤 DAG 도 collectors.supply_demand 를 호출하지 않는다.**
-# 일간 수급은 ``collectors.combined`` 가 ``api.stock_info.investor_institution_by_stock``
-# 으로 받고(그 경로는 정상), 이 모듈의 다중 페이지 백필 경로는 도달 불가능한 상태다.
-# 그래서 라이브러리 업그레이드로 깨진 걸 아무도 못 봤다.
-#
-# 고치려면 ``base._build_headers("ka10059", base._access_token, cont_yn, next_key)``
-# 형태로 토큰을 명시해야 한다(클라이언트 실제 시그니처 확인 후).
 def _fetch_investor_flow_pages(
     api: KiwoomAPI,
     code: str,
@@ -162,7 +149,16 @@ def _fetch_investor_flow_pages(
     all_rows: list[dict] = []
 
     for page in range(max_pages):
-        headers = base._build_headers("ka10059", cont_yn, next_key, None)
+        # ``_build_headers(api_id, token, cont_yn, next_key, extra_headers)``.
+        # 2026-08-15 까지 이 호출이 옛 인자 순서(api_id, cont_yn, next_key, extra)
+        # 그대로여서 token 자리에 "N" 이 들어가고 next_key=None 이 헤더 값이 되어
+        # ``AttributeError: 'NoneType' object has no attribute 'encode'`` 로 죽었다.
+        # 아무도 못 본 이유는 **이 경로가 도달 불가능**했기 때문이다 — 일간 수급은
+        # ``collectors.combined`` 가 받고 어떤 DAG 도 이 모듈을 부르지 않는다.
+        #
+        # 토큰은 매 페이지 ``_current_token()`` 으로 새로 받는다. 다중 페이지 백필은
+        # 오래 도는데 그 사이 토큰이 갱신되면 캐시해 둔 값은 만료된다.
+        headers = base._build_headers("ka10059", base._current_token(), cont_yn, next_key)
         for attempt in range(base._max_retries + 1):
             if base._rate_limiter is not None:
                 base._rate_limiter.acquire("ka10059")
@@ -196,7 +192,7 @@ def _fetch_investor_flow_pages(
                 # do with that stock). Re-login and retry this same page
                 # instead of giving up on the stock.
                 api.login()
-                headers = base._build_headers("ka10059", cont_yn, next_key, None)
+                headers = base._build_headers("ka10059", base._current_token(), cont_yn, next_key)
                 continue
             if return_code != 0:
                 raise KiwoomAPIError(
