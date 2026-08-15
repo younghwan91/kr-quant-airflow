@@ -22,7 +22,7 @@ lookahead 버그가 있었다. KRX MDCSTAT01501은 무인증·전종목·날짜�
 
 - 매 거래일 장 마감·시세확정 후(18:30 KST) 당일 상장주식수를 append.
 - 최초 과거 백필은 수동 트리거로 range 실행:
-    docker exec kr-quant-airflow-airflow-scheduler-1 \
+    docker exec quant-airflow-airflow-scheduler-1 \
       python -m collectors.krx_shares \
       --from 2024-01-08 --to <today> --db <dsn>
 - Kiwoom 자격증명이 불필요(네이버/DART와 동일하게 무인증).

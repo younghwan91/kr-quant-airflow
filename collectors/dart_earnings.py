@@ -41,7 +41,7 @@ REVENUE_ACCOUNTS = ("매출액", "수익(매출액)", "영업수익")
 OP_INCOME_ACCOUNTS = ("영업이익", "영업이익(손실)")
 
 # kr_quant.features.fundamentals.available_date의 인라인 복제 — 원래 kr-quant의
-# features 모듈에 있었으나, dart_earnings.py가 kr-quant-airflow로 이전되면서
+# features 모듈에 있었으나, dart_earnings.py가 quant-airflow로 이전되면서
 # features 전체를 끌어올 이유 없이 이 5줄짜리 순수함수만 복제(중복이 공유패키지보다 단순).
 QUARTER_LAG_DAYS = 45
 ANNUAL_LAG_DAYS = 90

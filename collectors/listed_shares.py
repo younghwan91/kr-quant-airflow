@@ -5,7 +5,7 @@ Source: ``ka10001`` (종목기본정보요청 / basic stock info), exposed as
 returned — see the caveat below.
 
 Field-name resolution (✅ VERIFIED 2026-07-09 via a real ``--prod`` call for
-005930 삼성전자 from inside the kr-quant-airflow scheduler container, using
+005930 삼성전자 from inside the quant-airflow scheduler container, using
 credentials from Airflow's Variables store):
     ``flo_stk`` is confirmed correct and its unit is **thousands of shares**.
     The real response returned ``"flo_stk": "5846279"``; ×1,000 =

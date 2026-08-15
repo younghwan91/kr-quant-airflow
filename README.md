@@ -1,6 +1,6 @@
-# kr-quant-airflow
+# quant-airflow
 
-[![CI](https://github.com/younghwan91/kr-quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/kr-quant-airflow/actions/workflows/ci.yml)
+[![CI](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/quant-airflow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
 
@@ -38,7 +38,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 
 *수집 로직이 왜 분석 레포가 아니라 이곳에 있는가*
 
-| | kr-quant-airflow (이 레포) | [kr-quant](https://github.com/younghwan91/kr-quant) |
+| | quant-airflow (이 레포) | [kr-quant](https://github.com/younghwan91/kr-quant) |
 |---|---|---|
 | **역할** | 데이터 **수집·적재·스케줄링** | 전략·피처 **분석** (백테스트, PEAD 등) |
 | **DB 접근** | 쓰기 (수집기가 upsert) | 읽기 전용 |
@@ -77,9 +77,9 @@ DAG 스케줄은 이 가동 창 안에 들도록 맞춰져 있다.
 
 ```bash
 # 스페어 PC (Ubuntu)
-git clone <this-repo> kr-quant-airflow
+git clone <this-repo> quant-airflow
 git clone https://github.com/younghwan91/kr-quant.git ../kr-quant   # sibling — 두 DAG만 사용
-cd kr-quant-airflow
+cd quant-airflow
 
 cp .env.example .env   # KIWOOM_APP_KEY/SECRET, DART_API_KEY(_2/_3), TIMESCALE_*, AIRFLOW_* 채우기
 docker compose up -d
@@ -239,9 +239,9 @@ TimescaleDB 접속 정보(`TIMESCALE_*`)는 LAN 내부용이라 평문 컨테이
 
 ## ⭐ 도움이 되셨다면
 
-이 프로젝트가 유용했다면 우측 상단 **[⭐ Star](https://github.com/younghwan91/kr-quant-airflow)** 를 눌러주세요. 검색·추천 노출이 올라가 더 많은 분들이 찾을 수 있습니다.
+이 프로젝트가 유용했다면 우측 상단 **[⭐ Star](https://github.com/younghwan91/quant-airflow)** 를 눌러주세요. 검색·추천 노출이 올라가 더 많은 분들이 찾을 수 있습니다.
 
-- 🐛 버그·질문 → [Issues](https://github.com/younghwan91/kr-quant-airflow/issues)
+- 🐛 버그·질문 → [Issues](https://github.com/younghwan91/quant-airflow/issues)
 - 📈 업데이트 소식 → [팔로우 @younghwan91](https://github.com/younghwan91)
 
 ## 관련 프로젝트 — 한국 주식 퀀트 스택
