@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
     code               TEXT NOT NULL,
     date               TEXT NOT NULL,
     shares_outstanding INTEGER,  -- sqlite INTEGER is dynamically 64-bit already;
+    source             TEXT NOT NULL DEFAULT 'kiwoom',  -- kiwoom/krx/dart(폐지 백필)
+    knowledge_date     TEXT,     -- DART 는 기준일(date)과 공시 접수일이 다르다
     PRIMARY KEY (code, date)     -- Postgres side (init_timescale.sql) must use BIGINT, not INTEGER(32bit) — 삼성전자(58억주) overflows it
 );
 CREATE INDEX IF NOT EXISTS idx_sh_date ON shares_outstanding_history(date);

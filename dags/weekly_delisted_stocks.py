@@ -22,7 +22,11 @@ KRX의 일반 통계 리포트(MDCSTAT류, ``daily_krx_shares`` DAG가 쓰는 �
 재생성돼야 한다. 반대 순서면 새로 받은 종목이 조정가 테이블에 일주일 늦게
 반영된다. 그래서 delisted 10:05 → price_adjust 10:40 으로 바꿨다.
 
-무인증, Kiwoom/DART 자격증명 불필요.
+**세 번째 태스크(2026-08-15 추가):** 상장주식수. KRX MDCSTAT 계열이 로그인 장벽으로
+막혀(실측 0행) DART ``stockTotqySttus`` 로 받는다 — 근거는
+``collectors/dart_shares.py`` docstring.
+
+마스터·시세 수집은 무인증, 주식수 백필만 DART 키가 필요하다.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from datetime import timedelta
 import pendulum
 from airflow.decorators import dag, task
 
-from _common import run_collector, timescale_dsn
+from _common import dart_env, run_collector, timescale_dsn
 
 
 @dag(
@@ -69,7 +73,23 @@ def weekly_delisted_stocks():
             "--db", timescale_dsn(),
         ])
 
-    collect_delisted() >> backfill_delisted_bars()
+    @task(retries=1, retry_delay=timedelta(minutes=20))
+    def backfill_delisted_shares() -> None:
+        """폐지 종목 상장주식수 백필 (DART).
+
+        시가총액의 분모다 — 이게 없으면 cap 기반 유니버스가 폐지 종목을 못 담아,
+        시세를 아무리 메워도 그 경로엔 생존편향이 남는다.
+
+        시세 백필 **뒤**에 둔다: 대상 선정이 ``daily_bars.source='naver'`` 기준이라
+        그 주에 새로 들어온 폐지 종목을 같은 실행에서 처리하려면 순서가 필요하다.
+        이미 주식수가 있는 코드는 건너뛰므로 매주 돌아도 신규분만 조회한다.
+        """
+        run_collector(
+            [sys.executable, "-m", "collectors.dart_shares", "--db", timescale_dsn()],
+            env=dart_env(),
+        )
+
+    collect_delisted() >> backfill_delisted_bars() >> backfill_delisted_shares()
 
 
 weekly_delisted_stocks()
