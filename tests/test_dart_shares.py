@@ -52,28 +52,54 @@ def test_error_and_empty_payloads_yield_nothing():
         assert ds.parse_shares(p) == (None, None)
 
 
-def test_latest_shares_walks_back_until_it_finds_a_report(monkeypatch):
-    """폐지 직전 해엔 사업보고서가 없는 경우가 많다 — 분기·직전연도까지 훑어야 한다."""
+def _payload_for(stlm: str) -> dict:
+    row = {**PAYLOAD["list"][0], "stlm_dt": stlm}
+    return {"status": "000", "list": [row]}
+
+
+def test_series_covers_every_year_of_the_trading_life(monkeypatch):
+    """**시계열이어야 하는 이유** — market_cap_asof 는 date <= 조회일 로 찾는다.
+
+    종목당 1점만 있으면(그것도 폐지일보다 뒤인 경우가 실측 35%) 그 종목의 모든
+    거래일에서 시총이 NULL 이 된다. 거래 기간을 가로지르는 점들이 있어야 한다.
+    """
+    monkeypatch.setattr(ds, "fetch",
+                        lambda key, cc, year, rc, **kw: _payload_for(f"{year}-12-31"))
+    got = ds.shares_series("k", "c", 2018, 2021, sleep=0)
+    assert [stlm for _, stlm, _ in got] == [
+        "2018-12-31", "2019-12-31", "2020-12-31", "2021-12-31"]
+
+
+def test_series_falls_back_to_quarterly_when_annual_is_missing(monkeypatch):
+    """폐지 직전 해엔 사업보고서를 못 낸 경우가 많다."""
     calls = []
 
     def fake(key, cc, year, rc, **kw):
         calls.append((year, rc))
-        # 폐지연도는 전부 비어 있고, 직전연도 3분기에만 값이 있다.
-        if year == 2022 and rc == "11014":
-            return PAYLOAD
-        return {"status": "013"}
+        return _payload_for(f"{year}-09-30") if rc == "11014" else {"status": "013"}
 
     monkeypatch.setattr(ds, "fetch", fake)
-    got = ds.latest_shares("k", "00126380", 2023, sleep=0)
-    assert got is not None
-    shares, stlm, rcept = got
-    assert shares == 5_919_637_922 and rcept == "2026-03-10"
-    assert calls[0] == (2023, "11011"), "최신 연도·사업보고서부터 훑어야 한다"
+    got = ds.shares_series("k", "c", 2020, 2020, sleep=0)
+    assert len(got) == 1 and got[0][1] == "2020-09-30"
+    assert calls[0] == (2020, "11011"), "사업보고서를 먼저 시도해야 한다"
 
 
-def test_latest_shares_gives_up_after_the_lookback(monkeypatch):
+def test_series_takes_one_point_per_year(monkeypatch):
+    """연 1점이면 충분하다 — 분기 전부는 4배 비싸고 주식수는 분기 내 잘 안 변한다."""
+    calls = []
+
+    def fake(key, cc, year, rc, **kw):
+        calls.append((year, rc))
+        return _payload_for(f"{year}-12-31")
+
+    monkeypatch.setattr(ds, "fetch", fake)
+    ds.shares_series("k", "c", 2019, 2021, sleep=0)
+    assert len(calls) == 3, "연도마다 첫 성공에서 멈춰야 한다"
+
+
+def test_series_empty_when_nothing_is_filed(monkeypatch):
     monkeypatch.setattr(ds, "fetch", lambda *a, **k: {"status": "013"})
-    assert ds.latest_shares("k", "x", 2023, sleep=0) is None
+    assert ds.shares_series("k", "x", 2019, 2021, sleep=0) == []
 
 
 def test_targets_skip_codes_that_already_have_shares(tmp_path):
@@ -89,8 +115,9 @@ def test_targets_skip_codes_that_already_have_shares(tmp_path):
                 " VALUES('A','2019-12-31',100)")
     con.commit()
 
-    got = dict(ds._targets(con))
-    assert set(got) == {"B"}, "A=이미 있음, C=상장 종목이라 대상 아님"
+    got = ds._targets(con)
+    assert [r[0] for r in got] == ["B"], "A=이미 있음, C=상장 종목이라 대상 아님"
+    assert got[0][1] and got[0][2], "거래 구간(first, last)이 함께 와야 한다"
     con.close()
 
 

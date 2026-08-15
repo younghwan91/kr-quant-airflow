@@ -112,31 +112,43 @@ def fetch(key: str, corp_code: str, year: int, reprt_code: str,
         return {}
 
 
-def latest_shares(key: str, corp_code: str, last_year: int,
-                  *, sleep: float = 0.15) -> tuple[int, str, str] | None:
-    """폐지 직전 시점의 ``(발행주식총수, 기준일, 접수일)``. 못 찾으면 None.
+def shares_series(key: str, corp_code: str, first_year: int, last_year: int,
+                  *, sleep: float = 0.15) -> list[tuple[int, str, str]]:
+    """연도별 ``(발행주식총수, 기준일, 접수일)`` **시계열**. 없으면 빈 리스트.
 
-    최신 연도·최신 보고서부터 훑어 **처음 값이 나오는 곳**에서 멈춘다. 폐지 종목은
-    보고가 끊기므로 "가장 마지막으로 알려진 주식수"가 우리가 얻을 수 있는 전부다.
+    **왜 시계열이어야 하나(2026-08-15 실측으로 배움).** 처음엔 "마지막으로 알려진
+    주식수" 1건만 받았는데 쓸모가 없었다. ``market_cap_asof`` 는 ``date <= 조회일``
+    로 역방향 as-of 를 하는데, 종목당 1행뿐이고 그 행의 기준일이 폐지일보다 뒤인
+    경우가 35%(413건 중 145건)였다 — 그 종목의 **모든 거래일에서 시총이 NULL** 이
+    된다. 나머지도 생애의 꼬리 구간만 덮는다. 유니버스에 넣으려면 거래 기간을
+    가로지르는 점들이 있어야 한다.
+
+    연도마다 사업보고서를 먼저 보고, 없으면 분기·반기를 훑어 **연 1점**을 확보한다.
+    분기 전부를 받으면 4배 비싸고, 주식수는 분기 안에서 잘 안 변한다.
     """
-    for year in range(last_year, last_year - LOOKBACK_YEARS, -1):
+    out: list[tuple[int, str, str]] = []
+    for year in range(first_year, last_year + 1):
         for rc, _name in REPORTS:
             payload = fetch(key, corp_code, year, rc)
             time.sleep(sleep)
             shares, stlm = parse_shares(payload)
             if shares and stlm:
-                return shares, stlm, receipt_date(payload) or stlm
-    return None
+                out.append((shares, stlm, receipt_date(payload) or stlm))
+                break
+    return out
 
 
-def _targets(con) -> list[tuple[str, str]]:
-    """``(code, 마지막 거래일)`` — 폐지 시세는 있는데 주식수가 없는 종목.
+def _targets(con) -> list[tuple[str, str, str]]:
+    """``(code, 첫 거래일, 마지막 거래일)`` — 폐지 시세는 있는데 주식수가 없는 종목.
+
+    거래 구간을 함께 돌려주는 이유: 그 구간을 가로지르는 주식수 점들이 있어야
+    ``market_cap_asof`` 의 역방향 as-of 가 값을 찾는다(:func:`shares_series` 참고).
 
     이미 주식수가 있는 코드는 건너뛴다(재실행 안전). 시세가 없는 폐지 종목은 대상이
     아니다 — 시총을 계산할 가격 자체가 없다.
     """
     sql = (
-        "SELECT b.code, max(b.date) FROM daily_bars b "
+        "SELECT b.code, min(b.date), max(b.date) FROM daily_bars b "
         "WHERE b.source = 'naver' "
         "  AND NOT EXISTS (SELECT 1 FROM shares_outstanding_history s "
         "                  WHERE s.code = b.code) "
@@ -148,7 +160,7 @@ def _targets(con) -> list[tuple[str, str]]:
             rows = cur.fetchall()
     else:
         rows = con.execute(sql).fetchall()
-    return [(r[0], str(r[1])) for r in rows]
+    return [(r[0], str(r[1]), str(r[2])) for r in rows]
 
 
 def _write(con, records: list[tuple]) -> int:
@@ -185,24 +197,25 @@ def main() -> int:
 
     found = no_corp = missing = written = 0
     t0 = time.time()
-    for i, (code, last) in enumerate(targets, 1):
+    for i, (code, first, last) in enumerate(targets, 1):
         cc = corp.get(code)
         if not cc:
             no_corp += 1
             continue
-        got = latest_shares(keys[0], cc, int(last[:4]), sleep=args.sleep)
-        if not got:
+        series = shares_series(keys[0], cc, int(first[:4]), int(last[:4]),
+                               sleep=args.sleep)
+        if not series:
             missing += 1
             continue
-        shares, stlm, rcept = got
         found += 1
         if not args.dry_run:
-            written += _write(con, [(code, stlm, shares, rcept, "dart")])
+            written += _write(con, [(code, stlm, shares, rcept, "dart")
+                                    for shares, stlm, rcept in series])
         if i % 50 == 0 or i == len(targets):
             el = time.time() - t0
             rate = i / el if el else 0
             print(f"  [{i}/{len(targets)}] 확보={found} corp없음={no_corp} 못찾음={missing} "
-                  f"기록={written} | {rate:.1f}종목/s "
+                  f"기록={written}행 | {rate:.1f}종목/s "
                   f"ETA {(len(targets)-i)/rate/60 if rate else 0:.1f}분", flush=True)
 
     con.close()
