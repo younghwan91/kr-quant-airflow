@@ -13,7 +13,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
 (`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG, 매일 증분 + 주간 깊이 재수집
+- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG(1개 paused), 매일 증분 + 주간 깊이 재수집
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
@@ -103,7 +103,7 @@ docker compose up -d
 | `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연 고려) |
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, `--multi-batch`) |
 | `daily_consensus` | 평일 18:00 | 네이버 애널리스트 컨센서스 |
-| `daily_krx_shares` | 평일 18:30 | KRX 일별 상장주식수(point-in-time) |
+| ~~`daily_krx_shares`~~ | ~~평일 18:30~~ | ⛔ **paused (2026-08-15)** — KRX가 MDCSTAT 계열에 로그인을 걸어 OTP가 `LOGOUT`을 반환한다. 22회 실행 내내 `rows=0`이면서 전부 성공으로 기록됐다(조용한 실패). 대체: 상장분은 `weekly_listed_shares`, 폐지분은 `dart_shares` |
 
 **주간 — 백필/스냅샷**
 
@@ -112,7 +112,7 @@ docker compose up -d
 | `earnings_backfill` | 일 10:00 | DART 실적 전체 이력 백필(`--multi-batch`, resume) |
 | `weekly_history_backfill` | 일 11:00 | 업종지수·공매도·신용잔고 히스토리 깊이 재수집 |
 | `weekly_listed_shares` | 월 10:10 | 키움 상장주식수 스냅샷 |
-| `weekly_delisted_stocks` | 토 10:05 | KRX 상장폐지종목 마스터 + **그 종목들의 과거 일봉 백필**(생존편향 보정) |
+| `weekly_delisted_stocks` | 토 10:05 | KRX 상장폐지종목 마스터 + **과거 일봉**(네이버) + **상장주식수**(DART) 백필 — 생존편향 보정 3층 |
 | `weekly_price_adjust` | 토 10:40 | `daily_bars_adjusted`(액면분할 백조정) 재생성 — delisted 뒤에 돌아야 새 폐지분이 당주에 반영된다 |
 
 > **신뢰성** — 모든 DAG 태스크에 재시도를 걸어 두었다. 외부 API·수집 DAG는
@@ -137,7 +137,7 @@ TimescaleDB hypertable(PK `(code, date)`)이고, 그 외는 일반 테이블이�
 | `short_selling` | 공매도 추이(수량·잔고·비율·평균가) |
 | `credit_balance` | 신용잔고(신규·상환·잔고·비율) |
 | `sector_index` | 업종지수 OHLCV |
-| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용) |
+| `shares_outstanding_history` | 상장주식수 이력(point-in-time 시총 계산용). `source`가 kiwoom/krx/dart(폐지 백필)를 구분 |
 | `consensus` | 네이버 애널리스트 컨센서스(목표가·투자의견·EPS) |
 
 **펀더멘털·마스터·스캐너 (일반 테이블)**
@@ -158,6 +158,7 @@ collectors/            # 수집 로직 자체 보유 (kr_quant 런타임 의존 
   config.py            #   자격증명 로딩 + 키움 클라이언트 생성 + DSN 마스킹
   {daily_bars,supply_demand,short_credit,...}.py   # 소스별 수집기
   naver_delisted_bars.py  #   폐지 종목 과거 일봉(키움은 빈 응답을 '성공'으로 준다)
+  dart_shares.py          #   폐지 종목 상장주식수(KRX MDCSTAT는 로그인 장벽으로 0행)
 scripts/
   wait_and_stop.sh     # 그날 DAG 전부 끝나면 스택 조기 종료 (22:00 안전장치)
   sync_to_timescale.py # sqlite → TimescaleDB 증분 upsert (레거시 경로)
@@ -184,6 +185,7 @@ psql "$KR_QUANT_DB" -v ON_ERROR_STOP=1 -f sql/migrations/001_earnings_knowledge_
 |---|---|---|
 | `001_earnings_knowledge_date` | 2026-08-13 | `earnings` PK를 `(code, period, knowledge_date)`로 확장 — 정정공시가 덮어쓰지 않고 새 버전으로 쌓인다. 기존 83,996행은 최초 보고치이므로 `knowledge_date = avail_date`로 백필 |
 | `002_daily_bars_source` | 2026-08-15 | `daily_bars.source` 추가 — 폐지 종목 시세를 네이버에서 받으면서 행별 출처를 남긴다(거래대금이 실측/근사로 갈림) |
+| `005_shares_source_knowledge` | 2026-08-15 | `shares_outstanding_history`에 `source`·`knowledge_date` 추가 — 폐지 종목 주식수를 DART에서 받으면서 출처와 "언제 알 수 있었나"를 남긴다(기준일 ≠ 공시일) |
 | `004_delisted_naver_checked` | 2026-08-15 | `delisted_stocks.naver_checked` 추가 — 네이버에 구간 내 데이터가 없거나 이미 다 받은 코드를 표시해 주간 재조회를 막는다(실측 주간 1,758회 → 0회) |
 | `003_daily_bars_adjusted_source` | 2026-08-15 | `daily_bars_adjusted.source` 추가 — 002 의 짝. 백테스트가 읽는 건 조정가 테이블이라 거기까지 전파돼야 근사 거래대금을 식별할 수 있다. **적용 후 `python -m kr_quant.price_adjust --rebuild-db` 로 재생성해야 기존 행이 채워진다** |
 

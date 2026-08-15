@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS shares_outstanding_history (
     code               TEXT NOT NULL,
     date               DATE NOT NULL,
     shares_outstanding BIGINT,  -- INTEGER(32bit, max~21억)로는 삼성전자 등 대형주 발행주식수(수십억주)가 오버플로우함
+    source             TEXT NOT NULL DEFAULT 'kiwoom',  -- kiwoom/krx/dart(폐지 백필)
+    knowledge_date     DATE,     -- DART 는 기준일(date)과 공시 접수일이 다르다
     PRIMARY KEY (code, date)
 );
 SELECT create_hypertable('shares_outstanding_history', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
