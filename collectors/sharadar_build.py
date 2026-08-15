@@ -28,9 +28,11 @@ SQL 로 옮기면 빠르겠지만, 동등성 테스트 없이는 그 버그들�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 from pathlib import Path
@@ -144,8 +146,14 @@ def validate(new: Path, current: Path, *, expected=EXPECTED_TABLES) -> dict[str,
     if empty:
         raise GateFailure(f"테이블이 0행입니다: {', '.join(empty)}")
 
-    if current.exists():
-        before = _counts(current, expected)
+    # 비교 기준은 **직전 빌드의 매니페스트**다. 살아 있는 스토어를 열면 안 된다 —
+    # DuckDB 는 단일 라이터라 연구 프로세스가 쓰기로 잡고 있으면 read_only 연결도
+    # 실패한다(2026-08-15 실측: 8개 테이블 빌드가 전부 성공했는데 게이트가 여기서
+    # 막혀 전체가 죽었다). 공개(os.replace)는 락이 필요 없는데 비교가 필요하게
+    # 만든 것이 설계 결함이었다.
+    baseline = read_build_manifest(current)
+    if baseline:
+        before = baseline.get("counts", {})
         shrunk = []
         for table, now in fresh.items():
             was = before.get(table)
@@ -156,16 +164,21 @@ def validate(new: Path, current: Path, *, expected=EXPECTED_TABLES) -> dict[str,
                 "행수가 크게 줄었습니다 — 벤더 파일 절단이 의심됩니다: " + "; ".join(shrunk)
             )
 
-        # 행수만으로는 부족하다. 오래된 raw 아카이브로 빌드하면 행수는 멀쩡한데
-        # 가격이 며칠 뒤로 가는 일이 생긴다(2026-08-15 실측: 8/12 자 raw 로 빌드해
-        # prices 최신일이 08-14 → 08-10 으로 후퇴했는데 행수 게이트는 통과했다).
-        # 뒤로 가는 스토어는 공개하면 안 된다.
-        stale = _max_date(new, "prices", "date"), _max_date(current, "prices", "date")
-        if stale[0] and stale[1] and stale[0] < stale[1]:
+        # 행수만으로는 부족하다. 낡은 raw 로 빌드하면 행수는 멀쩡한데 날짜가
+        # 뒤로 간다(실측: 8/12 raw 로 prices 최신일이 08-14 → 08-10 후퇴,
+        # 행수 게이트는 -0.07% 라 통과했다).
+        now_newest, was_newest = _max_date(new, "prices", "date"), baseline.get("newest")
+        if now_newest and was_newest and str(now_newest) < str(was_newest):
             raise GateFailure(
-                f"prices 최신일이 후퇴했습니다: {stale[1]} → {stale[0]} — "
+                f"prices 최신일이 후퇴했습니다: {was_newest} → {now_newest} — "
                 "raw 아카이브가 낡았습니다(먼저 collectors.sharadar_bulk 를 돌리세요)"
             )
+    elif current.exists():
+        print(
+            "⚠️  직전 빌드 매니페스트가 없어 회귀 비교를 건너뜁니다 "
+            "— 이번 공개가 기준선을 만듭니다",
+            flush=True,
+        )
 
     return {t: n for t, n in fresh.items() if n is not None}
 
@@ -185,7 +198,41 @@ def _max_date(store: Path, table: str, column: str):
         conn.close()
 
 
-def publish(new: Path, dest: Path, *, keep: int = 2) -> None:
+def manifest_path(store: Path) -> Path:
+    """스토어 옆에 두는 빌드 계보 파일 — 게이트의 비교 기준선."""
+    return Path(store).with_name(f"{Path(store).name}.manifest.json")
+
+
+def read_build_manifest(store: Path) -> dict:
+    """직전 빌드 기록. 없거나 깨졌으면 빈 dict — 비교를 건너뛸 뿐이다."""
+    try:
+        with open(manifest_path(store), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_build_manifest(store: Path, counts: dict, *, newest=None) -> None:
+    """공개한 스토어의 수치를 남긴다. 다음 실행의 게이트가 이걸 읽는다."""
+    path = manifest_path(store)
+    payload = {
+        "counts": {k: int(v) for k, v in counts.items()},
+        "newest": str(newest) if newest is not None else None,
+    }
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".manifest-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def publish(new: Path, dest: Path, *, keep: int = 2, counts=None, newest=None) -> None:
     """새 스토어를 제자리에 갈아끼운다.
 
     ``os.replace`` 는 원자적이다. 이 순간 스토어를 열고 있던 프로세스는 옛
@@ -201,6 +248,8 @@ def publish(new: Path, dest: Path, *, keep: int = 2) -> None:
             stale.unlink(missing_ok=True)
     os.chmod(new, 0o644)
     os.replace(new, dest)
+    if counts is not None:
+        write_build_manifest(dest, counts, newest=newest)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -223,7 +272,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--no-publish — {staging} 에 남겨둡니다", flush=True)
         return 0
 
-    publish(staging, store, keep=args.keep)
+    # 공개하면 staging 파일이 사라지므로 최신일을 먼저 읽어둔다.
+    newest = _max_date(staging, "prices", "date")
+    publish(staging, store, keep=args.keep, counts=counts, newest=newest)
     print(f"✅ 공개 완료: {store}  (총 {time.monotonic() - started:.1f}초)", flush=True)
     return 0
 

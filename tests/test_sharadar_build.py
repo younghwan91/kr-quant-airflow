@@ -15,7 +15,9 @@ from collectors.sharadar_build import (
     GateFailure,
     build_command,
     publish,
+    read_build_manifest,
     validate,
+    write_build_manifest,
 )
 
 
@@ -67,7 +69,9 @@ def test_sep_maps_to_prices_not_to_its_vendor_name():
 
 
 def test_gate_passes_when_the_new_store_grew(tmp_path):
-    current = _store(tmp_path / "cur.duckdb", {"prices": 10, "fundamentals": 5})
+    current = tmp_path / "cur.duckdb"
+    current.touch()
+    write_build_manifest(current, {"prices": 10, "fundamentals": 5}, newest="2026-08-13")
     new = _store(tmp_path / "new.duckdb", {"prices": 12, "fundamentals": 6})
 
     validate(new, current, expected=("prices", "fundamentals"))  # 예외 없으면 통과
@@ -99,7 +103,9 @@ def test_gate_rejects_a_large_row_count_regression(tmp_path):
 
     이게 게이트의 핵심이다. 조용히 공개되면 연구가 사라진 데이터 위에서 돈다.
     """
-    current = _store(tmp_path / "cur.duckdb", {"prices": 100})
+    current = tmp_path / "cur.duckdb"
+    current.touch()
+    write_build_manifest(current, {"prices": 100}, newest="2026-08-13")
     new = _store(tmp_path / "new.duckdb", {"prices": 80})  # -20%
 
     with pytest.raises(GateFailure, match="prices"):
@@ -108,7 +114,9 @@ def test_gate_rejects_a_large_row_count_regression(tmp_path):
 
 def test_gate_tolerates_a_tiny_regression(tmp_path):
     """벤더가 중복·오류 행을 정정하면 소폭 감소는 정상이다."""
-    current = _store(tmp_path / "cur.duckdb", {"prices": 100})
+    current = tmp_path / "cur.duckdb"
+    current.touch()
+    write_build_manifest(current, {"prices": 100}, newest="2026-08-13")
     new = _store(tmp_path / "new.duckdb", {"prices": 99})  # -1%
 
     validate(new, current, expected=("prices",))
@@ -121,7 +129,9 @@ def test_gate_rejects_a_store_whose_prices_went_backwards(tmp_path):
     08-14 → 08-10 으로 후퇴했는데 행수 게이트(−0.07%)는 그대로 통과했다.
     이걸 공개하면 연구가 나흘치를 잃고도 모른다.
     """
-    current = _store(tmp_path / "cur.duckdb", {"prices": 100}, newest="2026-08-14")
+    current = tmp_path / "cur.duckdb"
+    current.touch()
+    write_build_manifest(current, {"prices": 100}, newest="2026-08-14")
     new = _store(tmp_path / "new.duckdb", {"prices": 100}, newest="2026-08-10")
 
     with pytest.raises(GateFailure, match="후퇴"):
@@ -130,7 +140,9 @@ def test_gate_rejects_a_store_whose_prices_went_backwards(tmp_path):
 
 def test_gate_allows_an_unchanged_date_for_a_non_trading_day(tmp_path):
     """휴장일 재빌드는 최신일이 그대로다 — 이건 정상이라 막으면 안 된다."""
-    current = _store(tmp_path / "cur.duckdb", {"prices": 100}, newest="2026-08-14")
+    current = tmp_path / "cur.duckdb"
+    current.touch()
+    write_build_manifest(current, {"prices": 100}, newest="2026-08-14")
     new = _store(tmp_path / "new.duckdb", {"prices": 101}, newest="2026-08-14")
 
     validate(new, current, expected=("prices",))
@@ -171,3 +183,53 @@ def test_publish_works_when_there_is_no_existing_store(tmp_path):
     publish(new, dest)
 
     assert dest.exists()
+
+
+# ------------------------------------------------------- 매니페스트 기반 게이트
+
+
+def test_gate_uses_the_manifest_so_a_locked_store_does_not_block_it(tmp_path):
+    """게이트가 살아 있는 스토어를 읽으면 안 된다 — DuckDB 는 단일 라이터다.
+
+    2026-08-15 실측: 빌드 8개 테이블이 전부 성공했는데, 게이트가 행수 비교를
+    하려고 현재 스토어를 열다 연구 프로세스의 쓰기 락에 막혀 전체가 실패했다.
+    공개(os.replace)는 락이 필요 없는데 비교가 필요하게 만든 게 설계 결함이었다.
+    직전 빌드 수치를 파일로 남겨 비교하면 락이 아예 필요 없다.
+    """
+    new = _store(tmp_path / "new.duckdb", {"prices": 100}, newest="2026-08-14")
+    dest = tmp_path / "us.duckdb"
+    dest.write_bytes(b"not-a-real-duckdb-and-must-not-be-opened")
+    write_build_manifest(dest, {"prices": 98}, newest="2026-08-13")
+
+    validate(new, dest, expected=("prices",))  # 스토어를 안 열므로 통과해야 한다
+
+
+def test_manifest_gate_still_catches_a_row_regression(tmp_path):
+    new = _store(tmp_path / "new.duckdb", {"prices": 80}, newest="2026-08-14")
+    dest = tmp_path / "us.duckdb"
+    dest.write_bytes(b"unopenable")
+    write_build_manifest(dest, {"prices": 100}, newest="2026-08-13")
+
+    with pytest.raises(GateFailure, match="prices"):
+        validate(new, dest, expected=("prices",))
+
+
+def test_manifest_gate_still_catches_a_date_regression(tmp_path):
+    new = _store(tmp_path / "new.duckdb", {"prices": 100}, newest="2026-08-10")
+    dest = tmp_path / "us.duckdb"
+    dest.write_bytes(b"unopenable")
+    write_build_manifest(dest, {"prices": 100}, newest="2026-08-14")
+
+    with pytest.raises(GateFailure, match="후퇴"):
+        validate(new, dest, expected=("prices",))
+
+
+def test_publish_records_the_manifest_for_the_next_run(tmp_path):
+    dest = _store(tmp_path / "us.duckdb", {"prices": 1})
+    new = _store(tmp_path / "new.duckdb", {"prices": 99}, newest="2026-08-14")
+
+    publish(new, dest, counts={"prices": 99}, newest="2026-08-14")
+
+    recorded = read_build_manifest(dest)
+    assert recorded["counts"]["prices"] == 99
+    assert recorded["newest"] == "2026-08-14"
