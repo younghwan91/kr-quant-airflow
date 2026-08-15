@@ -1,5 +1,9 @@
 # kr-quant-airflow
 
+[![CI](https://github.com/younghwan91/kr-quant-airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/younghwan91/kr-quant-airflow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-younghwan--chae-0A66C2?logo=linkedin&logoColor=white)](https://www.linkedin.com/in/younghwan-chae/)
+
 한국 주식(코스피·코스닥)의 **시세·수급·실적·컨센서스**를 매일 자동으로 수집해
 TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collectors/`)과
 스케줄링(`dags/`)을 모두 이 저장소가 자체 보유한다.
