@@ -22,11 +22,14 @@ KRX의 일반 통계 리포트(MDCSTAT류, ``daily_krx_shares`` DAG가 쓰는 �
 재생성돼야 한다. 반대 순서면 새로 받은 종목이 조정가 테이블에 일주일 늦게
 반영된다. 그래서 delisted 10:05 → price_adjust 10:40 으로 바꿨다.
 
-**세 번째 태스크(2026-08-15 추가):** 상장주식수. KRX MDCSTAT 계열이 로그인 장벽으로
+**세·네 번째 태스크(2026-08-15 추가):** 상장주식수와 수급. KRX MDCSTAT 계열이 로그인 장벽으로
 막혀(실측 0행) DART ``stockTotqySttus`` 로 받는다 — 근거는
 ``collectors/dart_shares.py`` docstring.
 
-마스터·시세 수집은 무인증, 주식수 백필만 DART 키가 필요하다.
+수급은 **부분만** 채운다 — 네이버가 기관·외국인 순매매만 주므로 개인·기관세부는
+NULL 로 남는다(migration 006 의 source 컬럼으로 구분).
+
+마스터·시세·수급 수집은 무인증, 주식수 백필만 DART 키가 필요하다.
 """
 
 from __future__ import annotations
@@ -89,7 +92,24 @@ def weekly_delisted_stocks():
             env=dart_env(),
         )
 
-    collect_delisted() >> backfill_delisted_bars() >> backfill_delisted_shares()
+    @task(retries=1, retry_delay=timedelta(minutes=20))
+    def backfill_delisted_flow() -> None:
+        """폐지 종목 수급 **부분** 백필 (네이버).
+
+        키움 ka10059 는 폐지 코드에 return_code=0(성공) + 0행을 준다(실측). 네이버는
+        주지만 기관·외국인 순매매만 있어, 개인·기관세부는 NULL 로 남는다 —
+        개인 순매매를 쓰는 연구는 이 데이터로 재현할 수 없다.
+
+        페이지 단위 조회라 신규 폐지분 기준으로도 종목당 수십 요청이 든다. 이미 수급이
+        있는 코드는 건너뛰므로 매주 도는 비용은 신규분에 비례한다.
+        """
+        run_collector([
+            sys.executable, "-m", "collectors.naver_supply_demand",
+            "--db", timescale_dsn(),
+        ])
+
+    (collect_delisted() >> backfill_delisted_bars()
+     >> backfill_delisted_shares() >> backfill_delisted_flow())
 
 
 weekly_delisted_stocks()

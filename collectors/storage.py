@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS supply_demand (
     flu_rt       REAL,
     acc_trde_qty INTEGER,
     {_INVESTOR_COL_DDL},
+    source       TEXT NOT NULL DEFAULT 'kiwoom',  -- kiwoom(전체) / naver(폐지 부분: 기관·외국인만)
     PRIMARY KEY (code, date)
 );
 CREATE INDEX IF NOT EXISTS idx_sd_date ON supply_demand(date);

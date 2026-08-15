@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS supply_demand (
     samo_fund    INTEGER,
     natn         INTEGER,
     etc_corp     INTEGER,
+    source       TEXT NOT NULL DEFAULT 'kiwoom',  -- kiwoom(전체) / naver(폐지 부분: 기관·외국인만)
     PRIMARY KEY (code, date)
 );
 SELECT create_hypertable('supply_demand', 'date', if_not_exists => TRUE, chunk_time_interval => INTERVAL '1 year');
