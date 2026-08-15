@@ -26,7 +26,7 @@ from airflow.models import Variable
 # 시점)에 필요하므로 import 전에 미리 넣는다.
 sys.path.insert(0, "/opt/airflow")
 
-from collectors.config import mask_dsn  # noqa: E402
+from collectors.config import mask_secrets  # noqa: E402
 
 
 def timescale_dsn() -> str:
@@ -57,6 +57,21 @@ def dart_env() -> dict[str, str]:
     return env
 
 
+def sharadar_env() -> dict[str, str]:
+    """Sharadar 직판 API 키 + opt_portfolio 를 import 할 PYTHONPATH.
+
+    키는 다른 자격증명과 같이 Fernet Variables 에만 둔다. PYTHONPATH 는
+    weekly_price_adjust 가 kr-quant 에 쓰는 것과 같은 수법이다 — opt_portfolio
+    도 ro 마운트만 하고 pip install 하지 않으므로 src 레이아웃을 직접 가리킨다.
+    ``/opt/airflow`` 를 함께 넣는 건 자식이 ``collectors.sharadar_us`` 를
+    ``python -m`` 으로 찾아야 하기 때문이다.
+    """
+    env = os.environ.copy()
+    env["SHARADAR_API_KEY"] = Variable.get("SHARADAR_API_KEY")
+    env["PYTHONPATH"] = "/opt/airflow:/opt/opt-portfolio/src"
+    return env
+
+
 _SECRET_OPTS = ("--db", "--dsn")
 
 
@@ -67,10 +82,14 @@ def _redact(text: str) -> str:
     찍는다(supply_demand, daily_bars, short_credit, listed_shares, sector_index,
     combined). 커맨드라인만 마스킹해도 콜렉터 stdout을 로그로 흘리는 순간
     비밀번호가 그대로 남으므로, 스트리밍 길목에서 한 번 더 거른다 — 콜렉터를
-    새로 추가해도 자동으로 보호된다. ``collectors.config.mask_dsn``과 동일한
+    새로 추가해도 자동으로 보호된다. ``collectors.config.mask_secrets``와 동일한
     정규식을 쓰므로(단일 소스), 여기서는 그 함수를 그대로 재사용한다.
+
+    DSN 비밀번호에 더해 URL 쿼리의 ``api_key=`` 도 가린다 — Sharadar 직판은
+    키를 쿼리로 받고, requests 의 HTTPError 는 실패한 URL 을 통째로 메시지에
+    담는다. 4xx 한 번이면 태스크 로그에 키가 평문으로 남는다.
     """
-    return mask_dsn(text)
+    return mask_secrets(text)
 
 
 def _masked(cmd: list[str]) -> str:

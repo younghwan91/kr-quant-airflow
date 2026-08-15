@@ -34,6 +34,13 @@ x-airflow-common: &airflow-common
     # 콜렉터는 이제 자체 보유(./collectors) — 이 마운트는 weekly_price_adjust.py의
     # kr_quant.price_adjust 실행 1건에만 남아 있음(README/Dockerfile 참고).
     - ../kr-quant:/opt/kr-quant:ro
+    # 미국(Sharadar) 파이프라인 — daily_sharadar / weekly_sharadar_universe.
+    # kr-quant 와 같은 방식: 코드는 ro 로 마운트만 하고 pip install 하지 않으며
+    # PYTHONPATH(src 레이아웃)로 찾는다(_common.sharadar_env).
+    - ../opt_portfolio:/opt/opt-portfolio:ro
+    # 스토어(us_micro.duckdb, 2.7GB)만 rw. 레포 전체를 rw 로 열 이유가 없다 —
+    # DAG 가 쓰는 건 이 DuckDB 파일 하나다.
+    - ${US_DATA_DIR:-/home/young/data}:/opt/us-data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     airflow-meta-db:
