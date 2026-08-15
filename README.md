@@ -13,7 +13,7 @@ TimescaleDB에 적재하는 Airflow 파이프라인이다. 수집 로직(`collec
 잰다(생존편향). 이 파이프라인은 폐지 종목의 과거 시세·실적을 별도로 메우고
 (`naver_delisted_bars`, `daily_bars.source`), 매주 새 폐지분을 따라간다.
 
-- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG, 매일 증분 + 주간 깊이 재수집
+- **오케스트레이션**: Airflow(LocalExecutor) — 11개 DAG(1개 paused), 매일 증분 + 주간 깊이 재수집
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
 - **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
@@ -103,7 +103,7 @@ docker compose up -d
 | `daily_short_credit` | 화~토 10:00 | 공매도 + 신용잔고(키움, T+1~2 지연 고려) |
 | `daily_earnings` | 평일 16:00 | DART 실적 증분(당기 + 전분기, `--multi-batch`) |
 | `daily_consensus` | 평일 18:00 | 네이버 애널리스트 컨센서스 |
-| `daily_krx_shares` | 평일 18:30 | KRX 일별 상장주식수(point-in-time) |
+| ~~`daily_krx_shares`~~ | ~~평일 18:30~~ | ⛔ **paused (2026-08-15)** — KRX가 MDCSTAT 계열에 로그인을 걸어 OTP가 `LOGOUT`을 반환한다. 22회 실행 내내 `rows=0`이면서 전부 성공으로 기록됐다(조용한 실패). 대체: 상장분은 `weekly_listed_shares`, 폐지분은 `dart_shares` |
 
 **주간 — 백필/스냅샷**
 

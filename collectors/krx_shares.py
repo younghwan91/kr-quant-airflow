@@ -131,6 +131,15 @@ def fetch_snapshot(mkt_id: str, trd_dd: str) -> list[tuple[str, int]]:
     if otp_raw is None:
         return []
     otp = otp_raw.decode().strip()
+    # KRX 가 MDCSTAT 계열에 회원 로그인을 걸면서 OTP 자리에 'LOGOUT' 을 돌려준다
+    # (2026-08-15 실측). 그걸 그대로 다운로드에 넘기면 빈 응답이 오고, 이 함수는
+    # 빈 리스트를 반환해 **초록불로 0행**이 된다 — 실제로 이 DAG 는 22회 실행 내내
+    # rows=0 이면서 한 번도 실패로 잡히지 않았다. 조용히 틀리느니 터지는 게 낫다.
+    if otp.upper() == "LOGOUT" or len(otp) < 16:
+        raise RuntimeError(
+            f"KRX OTP 발급 거부(응답={otp!r}) — MDCSTAT 계열이 회원 로그인을 요구한다. "
+            f"이 소스는 현재 사용 불가다. 폐지 종목 주식수는 collectors/dart_shares.py 로 받는다."
+        )
     csv_raw = _post(DOWNLOAD_URL, {"code": otp})
     return parse_snapshot(_decode(csv_raw)) if csv_raw else []
 

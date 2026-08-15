@@ -1,5 +1,19 @@
 """일별 상장주식수(KRX MDCSTAT01501) 수집 → TimescaleDB 직접 저장.
 
+⛔ **2026-08-15부터 paused — 소스가 막혔다.** KRX 가 MDCSTAT 계열에 회원 로그인을
+걸면서 OTP 발급이 ``'LOGOUT'`` 을 돌려준다(실측). 그런데 수집기가 그 응답을 그대로
+다운로드에 넘기고 빈 결과를 빈 리스트로 반환해, **22회 실행 내내 rows=0 이면서 한 번도
+실패로 잡히지 않았다**(전 실행 로그 확인). 초록불이 아무 의미가 없던 DAG다.
+
+이제 ``krx_shares.fetch_snapshot`` 이 그 응답에 RuntimeError 를 낸다. 소스가 살아나기
+전까지 이 DAG 를 켜면 매일 빨갛게 터지므로 paused 로 둔다 — 지우지 않는 이유는 KRX 가
+정책을 되돌릴 수 있고, 이 소스가 유일한 **날짜지정·전종목** 경로이기 때문이다.
+
+대체 현황: 현재 상장 종목은 ``weekly_listed_shares``(키움 ka10001, 주간 스냅샷)가
+채운다 — 과거 백필은 안 되지만 앞으로는 쌓인다. 상장폐지 종목은
+``collectors/dart_shares.py``(DART stockTotqySttus)가 담당한다.
+
+
 ka10001(weekly_listed_shares)은 현재 스냅샷만 주어 과거 백필이 불가하고, 그
 때문에 market_cap_asof가 과거 백테스트 날짜에 '오늘의 주식수'를 소급 적용하는
 lookahead 버그가 있었다. KRX MDCSTAT01501은 무인증·전종목·날짜지정(trdDd)이라
@@ -29,6 +43,7 @@ from _common import run_collector, timescale_dsn
 @dag(
     dag_id="daily_krx_shares",
     schedule="30 18 * * 1-5",  # 평일 18:30 KST — 장 마감·KRX 시세 확정 후
+    is_paused_upon_creation=True,  # 소스 차단(위 docstring) — 살아나면 해제
     start_date=pendulum.datetime(2026, 7, 10, tz="Asia/Seoul"),
     catchup=False,
     max_active_runs=1,
