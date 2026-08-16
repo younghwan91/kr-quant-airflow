@@ -17,6 +17,7 @@ import pytest
 
 from collectors.sharadar_bulk import (
     DEFAULT_STALE_AFTER,
+    _display_width,
     SUBSCRIBED_TABLES,
     CorruptDownload,
     bulk_url,
@@ -598,3 +599,17 @@ def test_sync_prints_the_status_table(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Sharadar 동기화 상태" in out
     assert f"{len(SUBSCRIBED_TABLES)}개 중" in out
+
+
+def test_report_columns_line_up_with_the_header():
+    """한글은 두 칸을 차지한다 — f"{s:<20}" 는 문자 수로 세어 열이 어긋난다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+    header, row = text.splitlines()[1], text.splitlines()[2]
+
+    assert _display_width(header[: header.index("벤더 modified")]) == _display_width(
+        row[: row.index("2026")]
+    )

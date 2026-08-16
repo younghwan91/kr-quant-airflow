@@ -32,6 +32,7 @@ import os
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
@@ -259,6 +260,17 @@ def download(
     return written, digest
 
 
+def _display_width(text: str) -> int:
+    """터미널에서 차지하는 칸 수. 한글·전각 문장부호는 2칸이다."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def _pad(text: str, width: int, *, right: bool = False) -> str:
+    """표 정렬용 패딩. `f"{s:<20}"` 은 **문자 수**로 세어 한글 열이 어긋난다."""
+    fill = " " * max(0, width - _display_width(text))
+    return fill + text if right else text + fill
+
+
 def render_report(
     manifest: dict[str, dict],
     *,
@@ -274,13 +286,17 @@ def render_report(
     """
     lines = [
         f"=== Sharadar 동기화 상태 ({now}) ===",
-        f"{'테이블':<20}{'벤더 modified':<24}{'크기':>10}{'정체':>6}  판정",
+        _pad("테이블", 20) + _pad("벤더 modified", 24)
+        + _pad("크기", 10, right=True) + _pad("정체", 6, right=True) + "  판정",
     ]
     fresh = warn = 0
     for table in SUBSCRIBED_TABLES:
         entry = manifest.get(f"{table}.csv.zip", {})
         if table in missing:
-            lines.append(f"{table:<20}{'—':<24}{'—':>10}{'—':>6}  ⚠️ 벤더 목록에 없음")
+            lines.append(
+                _pad(table, 20) + _pad("—", 24) + _pad("—", 10, right=True)
+                + _pad("—", 6, right=True) + "  ⚠️ 벤더 목록에 없음"
+            )
             continue
         streak = int(entry.get("unchanged_streak", 0))
         size_mb = f"{int(entry.get('size', 0)) / 1e6:.1f}MB"
@@ -294,8 +310,9 @@ def render_report(
             verdict = "✓ 최신"
             fresh += 1
         lines.append(
-            f"{table:<20}{str(entry.get('vendor_modified', '—')):<24}"
-            f"{size_mb:>10}{streak:>6}  {verdict}"
+            _pad(table, 20) + _pad(str(entry.get("vendor_modified", "—")), 24)
+            + _pad(size_mb, 10, right=True) + _pad(str(streak), 6, right=True)
+            + f"  {verdict}"
         )
     lines.append(
         f"{len(SUBSCRIBED_TABLES)}개 중 최신 {fresh} · 주의 {warn} · 누락 {len(missing)}"
