@@ -1,5 +1,5 @@
 psycopg2-binary>=2.9
-kiwoom-client>=0.1.14
+kiwoom-client>=0.2.1
 pandas>=2.0
 
 # 미국(Sharadar) 파이프라인 — opt_portfolio.factor 를 /opt/opt-portfolio/src 에서
