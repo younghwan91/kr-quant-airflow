@@ -16,7 +16,7 @@
 
 - **오케스트레이션**: Airflow(LocalExecutor) — 12개 DAG(1개 paused), 한국은 매일 증분 + 주간 깊이 재수집, 미국(Sharadar)은 일일 스냅샷 재구축
 - **데이터 소스**: DART(실적) · 키움 REST(시세·수급·공매도·신용·상장주식수) · KRX(상장주식수·상장폐지) · 네이버(컨센서스·폐지종목 시세)
-- **저장소**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
+- **스토어**: TimescaleDB(hypertable + 압축) — LAN에 열어 메인 PC가 읽기 전용으로 질의
 
 ---
 
@@ -37,19 +37,19 @@
 
 ## 역할 분리
 
-*수집 로직이 왜 분석 레포가 아니라 이곳에 있는가*
+*수집 로직이 왜 분석 저장소가 아니라 이곳에 있는가*
 
-| | quant-airflow (이 레포) | [kr-quant](https://github.com/younghwan91/kr-quant) |
+| | quant-airflow (이 저장소) | [kr-quant](https://github.com/younghwan91/kr-quant) |
 |---|---|---|
 | **역할** | 데이터 **수집·적재·스케줄링** | 전략·피처 **분석** (백테스트, PEAD 등) |
 | **DB 접근** | 쓰기 (수집기가 upsert) | 읽기 전용 |
-| **핵심 디렉토리** | `collectors/`, `dags/` | `kr_quant/` 라이브러리 |
+| **핵심 디렉터리** | `collectors/`, `dags/` | `kr_quant/` 라이브러리 |
 
-수집 로직을 분석 레포에서 떼어 이곳에 둔 이유는 두 가지다.
+수집 로직을 분석 저장소에서 떼어 이곳에 둔 이유는 두 가지다.
 
 1. **사고 방지** — 분석 세션에서 실수로 수집기를 직접 실행해 DB 정합성이 깨지는
-   일을 막는다. 분석(kr-quant)과 수집(이 레포)은 완전히 분리된 프로세스이자 저장소다.
-2. **오픈소스 공유** — 두 저장소 모두 공개다. 수집(이 레포)과 분석(kr-quant)을 나눠 각각 독립적으로 읽히게 한다. `collectors/`는 `kr_quant` 패키지에
+   일을 막는다. 분석(kr-quant)과 수집(이곳)은 프로세스도 저장소도 완전히 분리돼 있다.
+2. **오픈소스 공유** — 두 저장소 모두 공개다. 수집(이곳)과 분석(kr-quant)을 나눠 각각 독립적으로 읽히게 한다. `collectors/`는 `kr_quant` 패키지에
    대한 런타임 의존이 전혀 없다(자체 `collectors/storage.py`·`collectors/config.py`를 갖는다).
 
 > **예외** — kr-quant는 여전히 `/opt/kr-quant`에 읽기 전용으로 마운트된다.
@@ -63,7 +63,7 @@ DB에 직접 upsert하고, 미국(Sharadar)은 벤더가 전체 스냅샷을 주
 지어 통째로 갈아끼운다.
 
 ```
-spare PC (Ubuntu, 이 레포)                                  main PC
+spare PC (Ubuntu, 이 저장소)                                 main PC
 ┌──────────────────────────────────────────────┐
 │ Airflow (LocalExecutor)  dags/*.py            │
 │                                                │
@@ -134,18 +134,18 @@ docker compose up -d
 
 > **신뢰성** — 모든 DAG 태스크에 재시도를 걸어 두었다. 외부 API·수집 DAG는
 > `retries=1, retry_delay=10분`, 전체 이력 백필은 `retries=2, 30분`이다. 일시적
-> 네트워크 오류로 그날 데이터가 조용히 빠지는 것을 막기 위함이다.
+> 네트워크 오류로 그날 데이터가 조용히 빠지는 것을 막기 위해서다.
 >
 > **신용잔고 한계** — 키움 API가 최근 100 거래일까지만 제공하므로, 그보다 깊은
 > 신용잔고 히스토리는 채울 수 없다.
 
-**미국(Sharadar) — 이 레포에서 유일한 비한국 파이프라인**
+**미국(Sharadar) — 이 저장소에서 유일한 비한국 파이프라인**
 
 | DAG | 스케줄(KST) | 하는 일 |
 |---|---|---|
 | `daily_sharadar` | 화~토 17:30 | 벌크 스냅샷 동기화 → 스토어 재구축 → 검증 → 원자적 공개 |
 
-한국 파이프라인과 스케줄러·인프라를 공유한다 — 레포가 `quant-airflow`인 이유다.
+한국 파이프라인과 스케줄러·인프라를 공유한다 — 저장소 이름이 `quant-airflow`인 이유다.
 설계 근거는
 [`docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md`](docs/superpowers/specs/2026-08-15-sharadar-bulk-rebuild-design.md).
 
@@ -172,7 +172,7 @@ docker compose up -d
   매번 전체 이력을 주므로 다음 실행에 저절로 채워진다. 막는 것은 손상(절단·
   체크섬 불일치·행수 급감·최신일 후퇴)뿐이다. 설계는
   [`2026-08-16-sharadar-sync-verification-design.md`](docs/superpowers/specs/2026-08-16-sharadar-sync-verification-design.md).
-- **수집 로직은 이 레포에 없다.** `opt_portfolio`(sibling)의 `opt-factor ingest`를
+- **수집 로직은 이 저장소에 없다.** `opt_portfolio`(sibling)의 `opt-factor ingest`를
   부른다 — `weekly_price_adjust`가 kr-quant를 쓰는 것과 같은 구조(ro 마운트 +
   `PYTHONPATH`, pip install 없음). `_csv_daily`(백만달러 환산)·`_csv_tickers`
   (`is_delisted` 리네임)·`_csv_fundamentals`(PIT 위반 제외)는 실제 버그에서 나온
