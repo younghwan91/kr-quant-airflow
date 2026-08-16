@@ -160,12 +160,18 @@ docker compose up -d
 계속 안전하게 읽는다.
 
 ```
-① RAW      /opt/us-data/sharadar/raw/  ← 벤더 `modified` 가 그대로면 안 받는다
+① RAW      /opt/us-data/sharadar/raw/  ← 매일 14개 전부 대조, `modified` 가 그대로면 안 받는다
 ② BUILD    raw → .us_micro.duckdb.building   (검증된 --provider csv 경로 재사용)
 ③ GATE     테이블 결측·0행·행수 5% 이상 감소면 공개 중단
 ④ PUBLISH  os.replace → us_micro.duckdb   (직전 2세대는 .prev* 로 보존)
 ```
 
+- **동기화 확인**: 구독 14개를 매일 전부 벤더 목록과 대조하고, 매 실행 끝에
+  상태 표(벤더 타임스탬프·정체 횟수·판정)를 찍는다. 전송이 없어도 `checked_at`이
+  갱신돼 "오늘 확인했다"가 남는다. 낡음(벤더 미갱신)은 막지 않는다 — 벌크가
+  매번 전체 이력을 주므로 다음 실행에 저절로 채워진다. 막는 것은 손상(절단·
+  체크섬 불일치·행수 급감·최신일 후퇴)뿐이다. 설계는
+  [`2026-08-16-sharadar-sync-verification-design.md`](docs/superpowers/specs/2026-08-16-sharadar-sync-verification-design.md).
 - **수집 로직은 이 레포에 없다.** `opt_portfolio`(sibling)의 `opt-factor ingest`를
   부른다 — `weekly_price_adjust`가 kr-quant를 쓰는 것과 같은 구조(ro 마운트 +
   `PYTHONPATH`, pip install 없음). `_csv_daily`(백만달러 환산)·`_csv_tickers`

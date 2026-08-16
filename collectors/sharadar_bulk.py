@@ -11,6 +11,14 @@
 타임스탬프를 로컬 매니페스트와 비교해 **안 바뀐 파일을 아예 안 받는다** — 벤더
 대역폭이 약 4.4MB/s 라 전량이 17분이고, 이게 유일한 낭비 차단 장치다.
 
+**확인은 매일 14개 전부, 전송은 바뀐 것만.** 주기를 나누면 그 주기를 부르는
+DAG 이 없을 때 해당 테이블이 영원히 안 받아진다 — 실제로 holdings·
+holdings_investor·descriptions 가 그 상태였다. 확인 사실은 `checked_at` 으로
+남고, 매 실행 끝에 14개 상태가 표로 출력된다.
+
+낡음(벤더 미갱신)은 막지 않는다 — 벌크가 매번 전체 이력을 주므로 다음 실행에
+저절로 채워진다. 막는 것은 손상(절단·체크섬 불일치)뿐이다.
+
 실행:
     python -m collectors.sharadar_bulk --raw-dir /opt/us-data/sharadar/raw
 """
@@ -295,51 +303,60 @@ def render_report(
     return "\n".join(lines)
 
 
-def sync(raw_dir: Path, *, api_key: str) -> dict[str, dict]:
-    """구독 14개를 벤더 최신본과 맞춘다. 반환값은 갱신된 매니페스트."""
+def sync(
+    raw_dir: Path,
+    *,
+    api_key: str,
+    now: str | None = None,
+    opener=urllib.request.urlopen,
+) -> dict[str, dict]:
+    """구독 14개를 벤더 최신본과 맞춘다. 반환값은 갱신된 매니페스트.
+
+    **전송이 없는 테이블도 반드시 `record_check` 를 거친다** — 안 그러면
+    "오늘 확인했다" 가 안 남아, 확인한 것인지 확인 자체를 안 한 것인지
+    구별할 수 없다. 요구사항의 절반이 여기 걸려 있다.
+    """
     raw_dir = Path(raw_dir)
-    listing = fetch_listing(api_key=api_key)
+    now = now or time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    listing = fetch_listing(api_key=api_key, opener=opener)
     plan, missing = plan_sync(listing)
     manifest = read_manifest(raw_dir)
 
     if missing:
         print(f"⚠️  벤더 목록에 없는 테이블: {', '.join(missing)}", flush=True)
-    if not plan:
-        print("⚠️  벤더 목록에서 구독 테이블을 하나도 못 찾았습니다", flush=True)
-        return manifest
 
-    skipped, fetched, total_bytes = [], [], 0
+    fetched: set[str] = set()
+    total_bytes = 0
     for table, modified in plan.items():
         dest = raw_dir / f"{table}.csv.zip"
-        if not needs_download(dest, modified, manifest=manifest):
-            skipped.append(table)
-            continue
-        started = time.monotonic()
-        size, digest = download(table, dest, api_key=api_key)
-        elapsed = time.monotonic() - started
-        rate = size / elapsed / 1e6 if elapsed else 0
-        print(
-            f"⬇  {table:18s} {size/1e6:8.1f}MB  {elapsed:6.1f}s  {rate:5.1f}MB/s  ({modified})",
-            flush=True,
-        )
-        manifest[dest.name] = {
-            **manifest.get(dest.name, {}),
-            "modified": modified,
-            "size": size,
-            "sha256": digest,
-        }
-        fetched.append(table)
-        total_bytes += size
-        # 매 파일마다 기록한다 — 17분짜리 작업이 중간에 죽어도 받은 것까지는 남는다.
+        if needs_download(dest, modified, manifest=manifest):
+            started = time.monotonic()
+            size, digest = download(table, dest, api_key=api_key, opener=opener)
+            elapsed = time.monotonic() - started
+            rate = size / elapsed / 1e6 if elapsed else 0
+            print(
+                f"⬇  {table:18s} {size/1e6:8.1f}MB  {elapsed:6.1f}s  "
+                f"{rate:5.1f}MB/s  ({modified})",
+                flush=True,
+            )
+            manifest[dest.name] = {
+                **manifest.get(dest.name, {}),
+                "modified": modified,
+                "size": size,
+                "sha256": digest,
+            }
+            fetched.add(table)
+            total_bytes += size
+        manifest[dest.name] = record_check(manifest.get(dest.name), modified, now=now)
+        # 매 테이블마다 기록한다 — 17분짜리 작업이 중간에 죽어도 여기까지는 남는다.
         write_manifest(raw_dir, manifest)
 
+    print(render_report(manifest, missing=missing, fetched=fetched, now=now), flush=True)
     print(
-        f"✅ 새로 받음 {len(fetched)}개 ({total_bytes/1e6:.0f}MB), "
-        f"변경 없어 건너뜀 {len(skipped)}개",
+        f"✅ 전송 {total_bytes/1e6:.0f}MB · 새로 받음 {len(fetched)}개 · "
+        f"확인만 {len(plan) - len(fetched)}개",
         flush=True,
     )
-    if skipped:
-        print(f"   스킵: {', '.join(skipped)}", flush=True)
     return manifest
 
 

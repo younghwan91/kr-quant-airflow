@@ -76,6 +76,11 @@ SEP 전체 이력 적재:  46,257,136행 (1997~2026, 21,960종목) / 37.4초
 
 ## 스케줄
 
+> **2026-08-16 개정**: 아래 주기 3분할은 폐기됐다. weekly·monthly 를 부르는
+> DAG 이 없어 `holdings`·`holdings_investor`·`descriptions` 가 한 번도 받아지지
+> 않았다. 지금은 매일 14개 전부를 대조하고 `modified` 가 바뀐 것만 받는다.
+> 후속 설계: `2026-08-16-sharadar-sync-verification-design.md`.
+
 | 데이터셋 | 주기 | 근거 |
 |---|---|---|
 | stocks(SEP) · daily · fundamentals(SF1) · actions · sp500 · tickers · insiders(SF2) · holdings_ticker(SF3A) · funds(SFP) · events · metrics | 매일 | 매일 갱신됨 |

@@ -61,11 +61,11 @@ def daily_sharadar():
 
     @task(retries=2, retry_delay=timedelta(minutes=10))
     def download() -> None:
-        """벌크 스냅샷 동기화. 벤더 `modified` 가 그대로면 받지 않는다."""
+        """구독 14개를 벤더와 대조. `modified` 가 그대로면 받지 않는다."""
         run_collector(
             [
                 sys.executable, "-m", "collectors.sharadar_bulk",
-                "--cadence", "daily", "--raw-dir", RAW_DIR,
+                "--raw-dir", RAW_DIR,
             ],
             env=sharadar_env(),
         )

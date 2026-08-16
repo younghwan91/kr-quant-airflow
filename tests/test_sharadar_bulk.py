@@ -29,6 +29,7 @@ from collectors.sharadar_bulk import (
     record_check,
     render_report,
     stale_threshold,
+    sync,
     verify_zip,
     write_manifest,
 )
@@ -516,3 +517,84 @@ def test_report_never_leaks_the_api_key():
     text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
 
     assert "api_key" not in text
+
+
+# --------------------------------------------------------------- sync 통합
+
+
+def _fake_vendor(tables):
+    """벤더 목록 + 벌크 zip 을 흉내내는 opener.
+
+    `opener` 는 반드시 인자로 넘긴다 — 기본값이 정의 시점에 바인딩되므로
+    `monkeypatch.setattr("...urllib.request.urlopen", ...)` 로는 안 바뀐다.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("data.csv", "ticker,date\nAAPL,2026-08-16\n")
+    payload = buf.getvalue()
+
+    def opener(url, timeout=None):
+        if "/bulk?" in url:
+            items = [{"table": t, "modified": m, "history": "full"} for t, m in tables.items()]
+            return io.BytesIO(json.dumps({"items": items}).encode())
+        return io.BytesIO(payload)
+
+    return opener
+
+
+def test_sync_records_a_check_for_tables_it_did_not_download(tmp_path):
+    """전송이 없어도 checked_at 이 남아야 한다 — 이게 동기화의 증거다."""
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+    manifest = sync(tmp_path, api_key="K", now="2026-08-17T17:30:00Z", opener=opener)
+
+    entry = manifest["stocks.csv.zip"]
+    assert entry["checked_at"] == "2026-08-17T17:30:00Z"
+    assert entry["unchanged_streak"] == 1
+
+
+def test_sync_does_not_retransmit_when_nothing_changed(tmp_path):
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+    before = (tmp_path / "stocks.csv.zip").stat().st_mtime_ns
+
+    sync(tmp_path, api_key="K", now="2026-08-17T17:30:00Z", opener=opener)
+
+    assert (tmp_path / "stocks.csv.zip").stat().st_mtime_ns == before
+
+
+def test_sync_fetches_all_fourteen_on_a_cold_start(tmp_path):
+    """주기 분할 시절 3개가 영원히 안 받아졌다 — 그 회귀를 고정한다."""
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    for table in SUBSCRIBED_TABLES:
+        assert (tmp_path / f"{table}.csv.zip").exists(), f"{table} 가 안 받아졌다"
+
+
+def test_sync_reports_a_table_the_vendor_dropped(tmp_path, capsys):
+    opener = _fake_vendor(
+        {t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES if t != "metrics"}
+    )
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    out = capsys.readouterr().out
+    assert "metrics" in out
+    assert "목록에 없음" in out
+
+
+def test_sync_prints_the_status_table(tmp_path, capsys):
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    out = capsys.readouterr().out
+    assert "Sharadar 동기화 상태" in out
+    assert f"{len(SUBSCRIBED_TABLES)}개 중" in out
