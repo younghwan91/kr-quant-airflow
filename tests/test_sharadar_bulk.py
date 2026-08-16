@@ -18,13 +18,17 @@ import pytest
 from collectors.sharadar_bulk import (
     DEFAULT_STALE_AFTER,
     SUBSCRIBED_TABLES,
+    CorruptDownload,
     bulk_url,
+    download,
+    file_sha256,
     is_stale,
     needs_download,
     plan_sync,
     read_manifest,
     record_check,
     stale_threshold,
+    verify_zip,
     write_manifest,
 )
 
@@ -302,3 +306,129 @@ def test_every_subscribed_table_has_a_threshold():
     """임계값을 안 정한 테이블이 조용히 기본값으로 새면 안 된다."""
     for table in SUBSCRIBED_TABLES:
         assert stale_threshold(table) > 0
+
+
+# ------------------------------------------------------------ 체크섬 · zip 검사
+
+
+def _real_zip(path):
+    """유효한 zip 을 만든다 — 테스트가 진짜 zip 구조를 통과하는지 봐야 한다."""
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("stocks.csv", "ticker,date,close\nAAPL,2026-08-16,100\n")
+    return path
+
+
+def test_sha256_is_stable_and_lowercase_hex(tmp_path):
+    path = tmp_path / "a.bin"
+    path.write_bytes(b"sharadar")
+
+    digest = file_sha256(path)
+
+    assert digest == file_sha256(path)
+    assert len(digest) == 64
+    assert digest == digest.lower()
+
+
+def test_sha256_differs_for_different_content(tmp_path):
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"sharadar")
+    b.write_bytes(b"sharadar ")
+
+    assert file_sha256(a) != file_sha256(b)
+
+
+def test_a_valid_zip_passes_verification(tmp_path):
+    verify_zip(_real_zip(tmp_path / "ok.csv.zip"))  # 예외 없으면 통과
+
+
+def test_a_truncated_zip_is_rejected(tmp_path):
+    """벤더 대역폭이 느려 17분짜리 전송이 끊기는 일이 실제로 있었다."""
+    path = _real_zip(tmp_path / "cut.csv.zip")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+    with pytest.raises(CorruptDownload):
+        verify_zip(path)
+
+
+def test_a_non_zip_payload_is_rejected(tmp_path):
+    """벤더가 에러 JSON 을 200 으로 돌려주는 경우 — zip 이 아니다."""
+    path = tmp_path / "err.csv.zip"
+    path.write_bytes(b'{"error":"rate limited"}')
+
+    with pytest.raises(CorruptDownload):
+        verify_zip(path)
+
+
+def test_redownloads_when_the_checksum_disagrees(tmp_path):
+    """크기가 같아도 내용이 상하면 다시 받아야 한다."""
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {
+            "modified": "2026-08-16T03:56:19Z",
+            "size": path.stat().st_size,
+            "sha256": "0" * 64,
+        }
+    }
+
+    assert needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_matching_checksum_still_skips(tmp_path):
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {
+            "modified": "2026-08-16T03:56:19Z",
+            "size": path.stat().st_size,
+            "sha256": file_sha256(path),
+        }
+    }
+
+    assert not needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_a_legacy_entry_without_a_checksum_does_not_trigger_a_redownload(tmp_path):
+    """기존 매니페스트에는 sha256 이 없다. 그걸로 재다운로드가 걸리면
+    첫 실행에 4.6GB 를 전량 다시 받는다 — 그럴 이유가 없다."""
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {"modified": "2026-08-16T03:56:19Z", "size": path.stat().st_size}
+    }
+
+    assert not needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_download_returns_the_checksum_of_what_it_wrote(tmp_path):
+    import io
+
+    payload = _real_zip(tmp_path / "src.zip").read_bytes()
+
+    def fake_opener(url, timeout=None):
+        return io.BytesIO(payload)
+
+    dest = tmp_path / "out" / "stocks.csv.zip"
+    size, digest = download("stocks", dest, api_key="K", opener=fake_opener)
+
+    assert size == len(payload)
+    assert digest == file_sha256(dest)
+
+
+def test_download_refuses_to_place_a_corrupt_payload(tmp_path):
+    """반쪽 zip 이 목적지에 남으면 다음 실행이 그걸 정상으로 본다."""
+    import io
+
+    def fake_opener(url, timeout=None):
+        return io.BytesIO(b"not a zip at all")
+
+    dest = tmp_path / "out" / "stocks.csv.zip"
+
+    with pytest.raises(CorruptDownload):
+        download("stocks", dest, api_key="K", opener=fake_opener)
+
+    assert not dest.exists()
+    assert not list((tmp_path / "out").glob("*.part"))

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 
 from pathlib import Path
 
@@ -71,6 +73,33 @@ STALE_AFTER: dict[str, int] = {
     "holdings_investor": 8,  # SF3B
     "descriptions": 30,      # 필드 사전. 2026-07-31 이후 무변경
 }
+
+
+class CorruptDownload(Exception):
+    """받은 파일이 온전한 zip 이 아니다 — 목적지에 두면 안 된다."""
+
+
+def file_sha256(path: Path, *, chunk: int = 1 << 22) -> str:
+    """파일 해시. 4.6GB 전량이라도 10초 안쪽이라 매 실행 계산해도 된다."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_zip(path: Path) -> None:
+    """중앙 디렉터리를 읽어 절단을 잡는다.
+
+    `testzip()` 은 전량 압축 해제라 953MB 에 쓸 수 없다. 중앙 디렉터리는
+    zip 끝에 있으므로, 읽히면 전송이 끝까지 온 것이다.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            if not zf.namelist():
+                raise CorruptDownload(f"빈 zip 입니다: {path}")
+    except zipfile.BadZipFile as exc:
+        raise CorruptDownload(f"온전한 zip 이 아닙니다: {path} ({exc})") from exc
 
 
 def stale_threshold(table: str) -> int:
@@ -167,8 +196,9 @@ def write_manifest(raw_dir: Path, entries: dict[str, dict]) -> None:
 def needs_download(path: Path, vendor_modified: str, *, manifest: dict[str, dict]) -> bool:
     """이 파일을 (다시) 받아야 하는가.
 
-    세 가지를 모두 본다. 매니페스트만 믿으면 파일이 지워진 걸 모르고 영원히
+    네 가지를 모두 본다. 매니페스트만 믿으면 파일이 지워진 걸 모르고 영원히
     스킵하고, 파일 존재만 믿으면 중단된 반쪽 zip 을 '최신'으로 오인한다.
+    크기가 같아도 내용이 상할 수 있어 체크섬까지 본다.
     """
     path = Path(path)
     if not path.exists():
@@ -178,15 +208,24 @@ def needs_download(path: Path, vendor_modified: str, *, manifest: dict[str, dict
         return True
     if record.get("modified") != vendor_modified:
         return True
-    return record.get("size") != path.stat().st_size
+    if record.get("size") != path.stat().st_size:
+        return True
+    recorded = record.get("sha256")
+    # 기존 매니페스트에는 sha256 이 없다. 없다고 다시 받으면 첫 실행에
+    # 4.6GB 를 전량 재전송한다 — 미검증으로 두고 다음에 받을 때 채운다.
+    if recorded and file_sha256(path) != recorded:
+        return True
+    return False
 
 
-def download(table: str, dest: Path, *, api_key: str, opener=urllib.request.urlopen) -> int:
-    """벌크 zip 을 받아 원자적으로 배치한다. 반환값은 바이트 수.
+def download(
+    table: str, dest: Path, *, api_key: str, opener=urllib.request.urlopen
+) -> tuple[int, str]:
+    """벌크 zip 을 받아 원자적으로 배치한다. 반환값은 `(바이트수, sha256)`.
 
-    임시 파일에 받고 `os.replace` 로 옮긴다 — 중간에 죽으면 목적지 파일은
-    아예 안 생긴다. 반쪽 zip 이 남으면 다음 실행이 그걸 정상으로 보고
-    그 테이블만 영구히 낡은 채 남는다.
+    임시 파일에 받고, **온전한 zip 인지 확인한 뒤에만** `os.replace` 한다 —
+    반쪽 zip 이 목적지에 남으면 다음 실행이 그걸 정상으로 보고 그 테이블만
+    영구히 낡은 채로 남는다.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +239,8 @@ def download(table: str, dest: Path, *, api_key: str, opener=urllib.request.urlo
                     break
                 out.write(block)
                 written += len(block)
+        verify_zip(Path(tmp))
+        digest = file_sha256(Path(tmp))
         # mkstemp 는 0600 으로 만든다. raw 아카이브는 컨테이너(airflow)가 쓰고
         # 호스트의 연구 도구가 읽으므로, 읽기는 열어둔다.
         os.chmod(tmp, 0o644)
@@ -207,7 +248,7 @@ def download(table: str, dest: Path, *, api_key: str, opener=urllib.request.urlo
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return written
+    return written, digest
 
 
 def sync(raw_dir: Path, *, api_key: str) -> dict[str, dict]:
@@ -230,14 +271,19 @@ def sync(raw_dir: Path, *, api_key: str) -> dict[str, dict]:
             skipped.append(table)
             continue
         started = time.monotonic()
-        size = download(table, dest, api_key=api_key)
+        size, digest = download(table, dest, api_key=api_key)
         elapsed = time.monotonic() - started
         rate = size / elapsed / 1e6 if elapsed else 0
         print(
             f"⬇  {table:18s} {size/1e6:8.1f}MB  {elapsed:6.1f}s  {rate:5.1f}MB/s  ({modified})",
             flush=True,
         )
-        manifest[dest.name] = {"modified": modified, "size": size}
+        manifest[dest.name] = {
+            **manifest.get(dest.name, {}),
+            "modified": modified,
+            "size": size,
+            "sha256": digest,
+        }
         fetched.append(table)
         total_bytes += size
         # 매 파일마다 기록한다 — 17분짜리 작업이 중간에 죽어도 받은 것까지는 남는다.
