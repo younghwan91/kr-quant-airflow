@@ -16,13 +16,22 @@ import json
 import pytest
 
 from collectors.sharadar_bulk import (
-    DAILY_TABLES,
-    MONTHLY_TABLES,
-    WEEKLY_TABLES,
+    DEFAULT_STALE_AFTER,
+    _display_width,
+    SUBSCRIBED_TABLES,
+    CorruptDownload,
     bulk_url,
+    download,
+    file_sha256,
+    is_stale,
     needs_download,
-    plan_downloads,
+    plan_sync,
     read_manifest,
+    record_check,
+    render_report,
+    stale_threshold,
+    sync,
+    verify_zip,
     write_manifest,
 )
 
@@ -66,44 +75,54 @@ def test_redownloads_when_size_disagrees_with_manifest(tmp_path):
     assert needs_download(path, "2026-08-15T03:56:19Z", manifest=manifest)
 
 
-# --------------------------------------------------------------- 주기별 계획
+# --------------------------------------------------------------- 구독 목록 대조
 
 
-def test_daily_plan_excludes_quarterly_and_static_tables():
-    """13F(542MB)를 매일 계획에 넣으면 분기당 1회면 될 걸 매일 확인하게 된다."""
-    listing = {t: "2026-08-15T03:00:00Z" for t in DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES}
+def test_every_paid_dataset_is_checked_every_run():
+    """구독분 14개가 전부 매일 대조 대상이다.
 
-    plan = plan_downloads(listing, cadence="daily")
-
-    assert set(plan) == set(DAILY_TABLES)
-    assert "holdings" not in plan
-    assert "descriptions" not in plan
-
-
-def test_weekly_plan_is_the_quarterly_tables():
-    listing = {t: "2026-08-15T03:00:00Z" for t in DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES}
-
-    assert set(plan_downloads(listing, cadence="weekly")) == set(WEEKLY_TABLES)
-
-
-def test_plan_skips_tables_the_vendor_did_not_list():
-    """벤더 목록에 없는 테이블을 계획에 넣으면 404 로 실패한다."""
-    listing = {"stocks": "2026-08-15T03:00:00Z"}
-
-    assert list(plan_downloads(listing, cadence="daily")) == ["stocks"]
-
-
-def test_every_paid_dataset_lands_in_exactly_one_cadence():
-    """구독분 중 어느 것도 빠지지 않고, 중복 다운로드도 없다."""
+    주기를 나눠두면 weekly/monthly 를 부르는 DAG 이 없을 때 그 테이블은
+    영원히 안 받아진다 — 실제로 holdings·holdings_investor·descriptions 가
+    그 상태였다. 요구사항은 '항상 동기화' 이므로 주기 개념 자체가 위반이다.
+    """
     paid = {
         "stocks", "daily", "fundamentals", "actions", "sp500", "tickers",
         "insiders", "holdings_ticker", "funds", "events", "metrics",
         "holdings", "holdings_investor", "descriptions",
     }
-    scheduled = DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES
 
-    assert set(scheduled) == paid
-    assert len(scheduled) == len(set(scheduled)), "같은 테이블이 두 주기에 있다"
+    assert set(SUBSCRIBED_TABLES) == paid
+    assert len(SUBSCRIBED_TABLES) == len(set(SUBSCRIBED_TABLES))
+
+
+def test_plan_covers_everything_the_vendor_offers():
+    listing = {t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES}
+
+    plan, missing = plan_sync(listing)
+
+    assert set(plan) == set(SUBSCRIBED_TABLES)
+    assert missing == ()
+
+
+def test_plan_reports_tables_the_vendor_did_not_list():
+    """조용히 빠지면 '변경 없어 건너뜀' 집계에도 안 잡혀 영원히 안 보인다."""
+    listing = {"stocks": "2026-08-16T03:00:00Z"}
+
+    plan, missing = plan_sync(listing)
+
+    assert list(plan) == ["stocks"]
+    assert "holdings" in missing
+    assert "descriptions" in missing
+    assert len(missing) == len(SUBSCRIBED_TABLES) - 1
+
+
+def test_plan_ignores_tables_we_do_not_subscribe_to():
+    """벤더가 새 테이블을 열어도 구독 목록에 없으면 받지 않는다."""
+    listing = {"stocks": "2026-08-16T03:00:00Z", "somethingnew": "2026-08-16T03:00:00Z"}
+
+    plan, _ = plan_sync(listing)
+
+    assert "somethingnew" not in plan
 
 
 # --------------------------------------------------------------- URL / 시크릿
@@ -187,12 +206,410 @@ def test_manifest_is_written_atomically(tmp_path):
     assert not list(tmp_path.glob("*.tmp")), "임시 파일이 남았다"
 
 
-@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly"])
-def test_manifest_json_is_human_readable(tmp_path, cadence):
+@pytest.mark.parametrize("table", ["stocks", "holdings", "descriptions"])
+def test_manifest_json_is_human_readable(tmp_path, table):
     """운영 중에 사람이 읽고 판단하는 파일이다 — 한 줄로 뭉치면 안 된다."""
-    write_manifest(tmp_path, {f"{cadence}.csv.zip": {"modified": "x", "size": 1}})
+    write_manifest(tmp_path, {f"{table}.csv.zip": {"modified": "x", "size": 1}})
 
     text = (tmp_path / "manifest.json").read_text()
 
     assert "\n" in text
     assert json.loads(text)
+
+
+# ------------------------------------------------------------ 확인 시각 · 정체
+
+
+def test_first_check_starts_the_streak_at_zero():
+    entry = record_check(None, "2026-08-16T03:56:19Z", now="2026-08-16T17:30:00Z")
+
+    assert entry["vendor_modified"] == "2026-08-16T03:56:19Z"
+    assert entry["checked_at"] == "2026-08-16T17:30:00Z"
+    assert entry["unchanged_streak"] == 0
+
+
+def test_streak_grows_while_the_vendor_timestamp_stands_still():
+    entry = record_check(None, "2026-08-16T03:56:19Z", now="2026-08-16T17:30:00Z")
+    entry = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+    entry = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-18T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 2
+    assert entry["checked_at"] == "2026-08-18T17:30:00Z"
+
+
+def test_streak_resets_when_the_vendor_publishes():
+    entry = {"vendor_modified": "2026-08-16T03:56:19Z", "unchanged_streak": 5}
+
+    entry = record_check(entry, "2026-08-17T03:51:02Z", now="2026-08-17T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 0
+
+
+def test_checked_at_advances_even_when_nothing_was_downloaded():
+    """전송이 없어도 '오늘 확인했다' 는 남아야 한다 — 이게 동기화의 증거다."""
+    entry = {"modified": "2026-08-16T03:56:19Z", "size": 953, "sha256": "abc"}
+
+    updated = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+
+    assert updated["checked_at"] == "2026-08-17T17:30:00Z"
+    assert updated["modified"] == "2026-08-16T03:56:19Z"  # 로컬 파일 정보는 그대로
+    assert updated["size"] == 953
+    assert updated["sha256"] == "abc"
+
+
+def test_record_check_does_not_mutate_the_input():
+    """매니페스트를 제자리에서 고치면 실패 시 되돌릴 게 없다."""
+    entry = {"vendor_modified": "2026-08-16T03:56:19Z", "unchanged_streak": 1}
+
+    record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 1
+
+
+def test_local_modified_is_never_overwritten_by_a_vendor_sighting():
+    """`modified` 는 로컬 파일의 값이다. 목록에서 본 값으로 덮으면 그 파일을
+    영원히 안 받는다 — needs_download 가 `modified` 로 판단하기 때문이다."""
+    entry = {"modified": "2026-08-16T03:56:19Z", "size": 953}
+
+    updated = record_check(entry, "2026-08-17T03:51:02Z", now="2026-08-17T17:30:00Z")
+
+    assert updated["modified"] == "2026-08-16T03:56:19Z"
+    assert updated["vendor_modified"] == "2026-08-17T03:51:02Z"
+
+
+# ------------------------------------------------------------------- 정체 판정
+
+
+def test_daily_tables_are_stale_after_two_idle_checks():
+    assert not is_stale("stocks", {"unchanged_streak": 1})
+    assert is_stale("stocks", {"unchanged_streak": 2})
+
+
+def test_quarterly_tables_tolerate_long_silence():
+    """13F 원자료는 분기 공시다 — 8회 정체는 정상이다."""
+    assert not is_stale("holdings", {"unchanged_streak": 7})
+    assert is_stale("holdings", {"unchanged_streak": 8})
+
+
+def test_the_static_field_dictionary_is_allowed_to_never_change():
+    """descriptions 는 2026-07-31 이후 안 바뀌었다 — 정상이다."""
+    assert not is_stale("descriptions", {"unchanged_streak": 29})
+
+
+def test_an_unknown_table_falls_back_to_the_daily_threshold():
+    assert stale_threshold("something_new") == DEFAULT_STALE_AFTER
+
+
+def test_a_never_checked_entry_is_not_stale():
+    """첫 실행에는 정체가 있을 수 없다."""
+    assert not is_stale("stocks", {})
+
+
+def test_every_subscribed_table_has_a_threshold():
+    """임계값을 안 정한 테이블이 조용히 기본값으로 새면 안 된다."""
+    for table in SUBSCRIBED_TABLES:
+        assert stale_threshold(table) > 0
+
+
+# ------------------------------------------------------------ 체크섬 · zip 검사
+
+
+def _real_zip(path):
+    """유효한 zip 을 만든다 — 테스트가 진짜 zip 구조를 통과하는지 봐야 한다."""
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("stocks.csv", "ticker,date,close\nAAPL,2026-08-16,100\n")
+    return path
+
+
+def test_sha256_is_stable_and_lowercase_hex(tmp_path):
+    path = tmp_path / "a.bin"
+    path.write_bytes(b"sharadar")
+
+    digest = file_sha256(path)
+
+    assert digest == file_sha256(path)
+    assert len(digest) == 64
+    assert digest == digest.lower()
+
+
+def test_sha256_differs_for_different_content(tmp_path):
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"sharadar")
+    b.write_bytes(b"sharadar ")
+
+    assert file_sha256(a) != file_sha256(b)
+
+
+def test_a_valid_zip_passes_verification(tmp_path):
+    verify_zip(_real_zip(tmp_path / "ok.csv.zip"))  # 예외 없으면 통과
+
+
+def test_a_truncated_zip_is_rejected(tmp_path):
+    """벤더 대역폭이 느려 17분짜리 전송이 끊기는 일이 실제로 있었다."""
+    path = _real_zip(tmp_path / "cut.csv.zip")
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) // 2])
+
+    with pytest.raises(CorruptDownload):
+        verify_zip(path)
+
+
+def test_a_non_zip_payload_is_rejected(tmp_path):
+    """벤더가 에러 JSON 을 200 으로 돌려주는 경우 — zip 이 아니다."""
+    path = tmp_path / "err.csv.zip"
+    path.write_bytes(b'{"error":"rate limited"}')
+
+    with pytest.raises(CorruptDownload):
+        verify_zip(path)
+
+
+def test_redownloads_when_the_checksum_disagrees(tmp_path):
+    """크기가 같아도 내용이 상하면 다시 받아야 한다."""
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {
+            "modified": "2026-08-16T03:56:19Z",
+            "size": path.stat().st_size,
+            "sha256": "0" * 64,
+        }
+    }
+
+    assert needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_matching_checksum_still_skips(tmp_path):
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {
+            "modified": "2026-08-16T03:56:19Z",
+            "size": path.stat().st_size,
+            "sha256": file_sha256(path),
+        }
+    }
+
+    assert not needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_a_legacy_entry_without_a_checksum_does_not_trigger_a_redownload(tmp_path):
+    """기존 매니페스트에는 sha256 이 없다. 그걸로 재다운로드가 걸리면
+    첫 실행에 4.6GB 를 전량 다시 받는다 — 그럴 이유가 없다."""
+    path = tmp_path / "stocks.csv.zip"
+    path.write_bytes(b"PK\x03\x04AAAA")
+    manifest = {
+        "stocks.csv.zip": {"modified": "2026-08-16T03:56:19Z", "size": path.stat().st_size}
+    }
+
+    assert not needs_download(path, "2026-08-16T03:56:19Z", manifest=manifest)
+
+
+def test_download_returns_the_checksum_of_what_it_wrote(tmp_path):
+    import io
+
+    payload = _real_zip(tmp_path / "src.zip").read_bytes()
+
+    def fake_opener(url, timeout=None):
+        return io.BytesIO(payload)
+
+    dest = tmp_path / "out" / "stocks.csv.zip"
+    size, digest = download("stocks", dest, api_key="K", opener=fake_opener)
+
+    assert size == len(payload)
+    assert digest == file_sha256(dest)
+
+
+def test_download_refuses_to_place_a_corrupt_payload(tmp_path):
+    """반쪽 zip 이 목적지에 남으면 다음 실행이 그걸 정상으로 본다."""
+    import io
+
+    def fake_opener(url, timeout=None):
+        return io.BytesIO(b"not a zip at all")
+
+    dest = tmp_path / "out" / "stocks.csv.zip"
+
+    with pytest.raises(CorruptDownload):
+        download("stocks", dest, api_key="K", opener=fake_opener)
+
+    assert not dest.exists()
+    assert not list((tmp_path / "out").glob("*.part"))
+
+
+# ------------------------------------------------------------------- 상태 보고
+
+
+def _manifest(**tables):
+    return {f"{t}.csv.zip": entry for t, entry in tables.items()}
+
+
+def test_report_lists_every_subscribed_table():
+    """14개 전부가 보여야 한다 — 빠진 줄이 곧 안 보이는 구멍이다."""
+    text = render_report({}, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    for table in SUBSCRIBED_TABLES:
+        assert table in text
+
+
+def test_report_marks_what_was_downloaded():
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 953210472,
+                "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched={"stocks"}, now="2026-08-16T17:34:00Z")
+
+    assert "새로 받음" in text
+
+
+def test_report_flags_a_stalled_table():
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-10T03:56:19Z", "size": 1, "unchanged_streak": 4}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    assert "⚠️" in text
+    assert "4회" in text
+
+
+def test_report_does_not_flag_a_quietly_static_table():
+    """descriptions 는 안 바뀌는 게 정상이다 — 매일 경고가 뜨면 아무도 안 본다."""
+    manifest = _manifest(
+        descriptions={"vendor_modified": "2026-07-31T02:10:44Z", "size": 1,
+                      "unchanged_streak": 12}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    line = next(ln for ln in text.splitlines() if ln.startswith("descriptions"))
+    assert "⚠️" not in line
+
+
+def test_report_shows_tables_the_vendor_did_not_list():
+    text = render_report({}, missing=("metrics",), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    line = next(ln for ln in text.splitlines() if ln.startswith("metrics"))
+    assert "목록에 없음" in line
+
+
+def test_report_totals_add_up_to_the_subscription():
+    """최신 + 주의 + 누락 = 14. 안 맞으면 어딘가 빠진 것이다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0},
+        holdings={"vendor_modified": "2026-07-15T04:02:11Z", "size": 1, "unchanged_streak": 9},
+    )
+
+    text = render_report(manifest, missing=("metrics",), fetched={"stocks"},
+                         now="2026-08-16T17:34:00Z")
+
+    assert f"{len(SUBSCRIBED_TABLES)}개 중" in text
+    assert "주의 1" in text
+    assert "누락 1" in text
+
+
+def test_report_never_leaks_the_api_key():
+    """운영 중 사람이 읽고 로그에도 남는 출력이다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    assert "api_key" not in text
+
+
+# --------------------------------------------------------------- sync 통합
+
+
+def _fake_vendor(tables):
+    """벤더 목록 + 벌크 zip 을 흉내내는 opener.
+
+    `opener` 는 반드시 인자로 넘긴다 — 기본값이 정의 시점에 바인딩되므로
+    `monkeypatch.setattr("...urllib.request.urlopen", ...)` 로는 안 바뀐다.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("data.csv", "ticker,date\nAAPL,2026-08-16\n")
+    payload = buf.getvalue()
+
+    def opener(url, timeout=None):
+        if "/bulk?" in url:
+            items = [{"table": t, "modified": m, "history": "full"} for t, m in tables.items()]
+            return io.BytesIO(json.dumps({"items": items}).encode())
+        return io.BytesIO(payload)
+
+    return opener
+
+
+def test_sync_records_a_check_for_tables_it_did_not_download(tmp_path):
+    """전송이 없어도 checked_at 이 남아야 한다 — 이게 동기화의 증거다."""
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+    manifest = sync(tmp_path, api_key="K", now="2026-08-17T17:30:00Z", opener=opener)
+
+    entry = manifest["stocks.csv.zip"]
+    assert entry["checked_at"] == "2026-08-17T17:30:00Z"
+    assert entry["unchanged_streak"] == 1
+
+
+def test_sync_does_not_retransmit_when_nothing_changed(tmp_path):
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+    before = (tmp_path / "stocks.csv.zip").stat().st_mtime_ns
+
+    sync(tmp_path, api_key="K", now="2026-08-17T17:30:00Z", opener=opener)
+
+    assert (tmp_path / "stocks.csv.zip").stat().st_mtime_ns == before
+
+
+def test_sync_fetches_all_fourteen_on_a_cold_start(tmp_path):
+    """주기 분할 시절 3개가 영원히 안 받아졌다 — 그 회귀를 고정한다."""
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    for table in SUBSCRIBED_TABLES:
+        assert (tmp_path / f"{table}.csv.zip").exists(), f"{table} 가 안 받아졌다"
+
+
+def test_sync_reports_a_table_the_vendor_dropped(tmp_path, capsys):
+    opener = _fake_vendor(
+        {t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES if t != "metrics"}
+    )
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    out = capsys.readouterr().out
+    assert "metrics" in out
+    assert "목록에 없음" in out
+
+
+def test_sync_prints_the_status_table(tmp_path, capsys):
+    opener = _fake_vendor({t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES})
+
+    sync(tmp_path, api_key="K", now="2026-08-16T17:30:00Z", opener=opener)
+
+    out = capsys.readouterr().out
+    assert "Sharadar 동기화 상태" in out
+    assert f"{len(SUBSCRIBED_TABLES)}개 중" in out
+
+
+def test_report_columns_line_up_with_the_header():
+    """한글은 두 칸을 차지한다 — f"{s:<20}" 는 문자 수로 세어 열이 어긋난다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+    header, row = text.splitlines()[1], text.splitlines()[2]
+
+    assert _display_width(header[: header.index("벤더 modified")]) == _display_width(
+        row[: row.index("2026")]
+    )
