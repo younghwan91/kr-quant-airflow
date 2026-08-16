@@ -251,6 +251,50 @@ def download(
     return written, digest
 
 
+def render_report(
+    manifest: dict[str, dict],
+    *,
+    missing: tuple[str, ...],
+    fetched: set[str],
+    now: str,
+) -> str:
+    """14개 전부의 동기화 상태를 한 표로.
+
+    요구사항은 "매일 최신인지 **확인**되어야 한다" 이고, 확인의 산출물이
+    이 표다. 줄이 빠지면 그게 곧 안 보이는 구멍이므로 구독 목록 전체를
+    무조건 훑는다 — 매니페스트에 있는 것만 찍지 않는다.
+    """
+    lines = [
+        f"=== Sharadar 동기화 상태 ({now}) ===",
+        f"{'테이블':<20}{'벤더 modified':<24}{'크기':>10}{'정체':>6}  판정",
+    ]
+    fresh = warn = 0
+    for table in SUBSCRIBED_TABLES:
+        entry = manifest.get(f"{table}.csv.zip", {})
+        if table in missing:
+            lines.append(f"{table:<20}{'—':<24}{'—':>10}{'—':>6}  ⚠️ 벤더 목록에 없음")
+            continue
+        streak = int(entry.get("unchanged_streak", 0))
+        size_mb = f"{int(entry.get('size', 0)) / 1e6:.1f}MB"
+        if table in fetched:
+            verdict = "⬇ 새로 받음"
+            fresh += 1
+        elif is_stale(table, entry):
+            verdict = f"⚠️ {streak}회 연속 정체"
+            warn += 1
+        else:
+            verdict = "✓ 최신"
+            fresh += 1
+        lines.append(
+            f"{table:<20}{str(entry.get('vendor_modified', '—')):<24}"
+            f"{size_mb:>10}{streak:>6}  {verdict}"
+        )
+    lines.append(
+        f"{len(SUBSCRIBED_TABLES)}개 중 최신 {fresh} · 주의 {warn} · 누락 {len(missing)}"
+    )
+    return "\n".join(lines)
+
+
 def sync(raw_dir: Path, *, api_key: str) -> dict[str, dict]:
     """구독 14개를 벤더 최신본과 맞춘다. 반환값은 갱신된 매니페스트."""
     raw_dir = Path(raw_dir)

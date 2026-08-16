@@ -27,6 +27,7 @@ from collectors.sharadar_bulk import (
     plan_sync,
     read_manifest,
     record_check,
+    render_report,
     stale_threshold,
     verify_zip,
     write_manifest,
@@ -432,3 +433,86 @@ def test_download_refuses_to_place_a_corrupt_payload(tmp_path):
 
     assert not dest.exists()
     assert not list((tmp_path / "out").glob("*.part"))
+
+
+# ------------------------------------------------------------------- 상태 보고
+
+
+def _manifest(**tables):
+    return {f"{t}.csv.zip": entry for t, entry in tables.items()}
+
+
+def test_report_lists_every_subscribed_table():
+    """14개 전부가 보여야 한다 — 빠진 줄이 곧 안 보이는 구멍이다."""
+    text = render_report({}, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    for table in SUBSCRIBED_TABLES:
+        assert table in text
+
+
+def test_report_marks_what_was_downloaded():
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 953210472,
+                "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched={"stocks"}, now="2026-08-16T17:34:00Z")
+
+    assert "새로 받음" in text
+
+
+def test_report_flags_a_stalled_table():
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-10T03:56:19Z", "size": 1, "unchanged_streak": 4}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    assert "⚠️" in text
+    assert "4회" in text
+
+
+def test_report_does_not_flag_a_quietly_static_table():
+    """descriptions 는 안 바뀌는 게 정상이다 — 매일 경고가 뜨면 아무도 안 본다."""
+    manifest = _manifest(
+        descriptions={"vendor_modified": "2026-07-31T02:10:44Z", "size": 1,
+                      "unchanged_streak": 12}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    line = next(ln for ln in text.splitlines() if ln.startswith("descriptions"))
+    assert "⚠️" not in line
+
+
+def test_report_shows_tables_the_vendor_did_not_list():
+    text = render_report({}, missing=("metrics",), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    line = next(ln for ln in text.splitlines() if ln.startswith("metrics"))
+    assert "목록에 없음" in line
+
+
+def test_report_totals_add_up_to_the_subscription():
+    """최신 + 주의 + 누락 = 14. 안 맞으면 어딘가 빠진 것이다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0},
+        holdings={"vendor_modified": "2026-07-15T04:02:11Z", "size": 1, "unchanged_streak": 9},
+    )
+
+    text = render_report(manifest, missing=("metrics",), fetched={"stocks"},
+                         now="2026-08-16T17:34:00Z")
+
+    assert f"{len(SUBSCRIBED_TABLES)}개 중" in text
+    assert "주의 1" in text
+    assert "누락 1" in text
+
+
+def test_report_never_leaks_the_api_key():
+    """운영 중 사람이 읽고 로그에도 남는 출력이다."""
+    manifest = _manifest(
+        stocks={"vendor_modified": "2026-08-16T03:56:19Z", "size": 1, "unchanged_streak": 0}
+    )
+
+    text = render_report(manifest, missing=(), fetched=set(), now="2026-08-16T17:34:00Z")
+
+    assert "api_key" not in text
