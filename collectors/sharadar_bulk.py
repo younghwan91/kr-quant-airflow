@@ -12,7 +12,7 @@
 대역폭이 약 4.4MB/s 라 전량이 17분이고, 이게 유일한 낭비 차단 장치다.
 
 실행:
-    python -m collectors.sharadar_bulk --cadence daily --raw-dir /opt/us-data/sharadar/raw
+    python -m collectors.sharadar_bulk --raw-dir /opt/us-data/sharadar/raw
 """
 
 from __future__ import annotations
@@ -30,27 +30,29 @@ from pathlib import Path
 
 _API_ROOT = "https://api.sharadar.com/v1.0"
 
-# 주기는 데이터가 실제로 변하는 빈도로 정했다. `modified` 비교가 있으니 주기를
-# 촘촘히 잡아도 전송은 안 늘지만, 목록 조회와 판정 비용은 든다.
-DAILY_TABLES = (
-    "stocks",           # SEP  — 주가. 953MB
-    "daily",            # DAILY— 시총/EV. 733MB
-    "fundamentals",     # SF1  — 분기 재무. 626MB
-    "funds",            # SFP  — ETF·펀드 가격. 286MB
-    "insiders",         # SF2  — Form 4. 234MB
-    "holdings_ticker",  # SF3A — 13F 티커 집계. 18MB
-    "events",           # 11MB
-    "actions",          # 9MB
-    "metrics",          # 1.4MB
-    "sp500",            # 270KB
-    "tickers",          # 4.8MB
+# 구독 중인 전량. **주기를 나누지 않는다** — 요구사항이 "항상 동기화" 이고,
+# 나눠두면 그 주기를 부르는 DAG 이 없을 때 해당 테이블은 영원히 안 받아진다
+# (실제로 holdings·holdings_investor·descriptions 가 그 상태였다).
+#
+# 매일 14개를 다 확인해도 전송은 안 늘어난다 — `modified` 가 그대로면 0바이트다.
+# 늘어나는 비용은 목록 조회 1회뿐이고, 13F 542MB 는 실제로 바뀌는 분기당
+# 한 번만 내려온다. 주석의 크기는 2026-08-15 실측이다.
+SUBSCRIBED_TABLES = (
+    "stocks",            # SEP  — 주가. 953MB
+    "daily",             # DAILY— 시총/EV. 733MB
+    "fundamentals",      # SF1  — 분기 재무. 626MB
+    "funds",             # SFP  — ETF·펀드 가격. 286MB
+    "insiders",          # SF2  — Form 4. 234MB
+    "holdings",          # SF3  — 13F 원자료. 542MB
+    "holdings_investor", # SF3B — 13F 투자자별
+    "holdings_ticker",   # SF3A — 13F 티커 집계. 18MB
+    "events",            # 11MB
+    "actions",           # 9MB
+    "metrics",           # 1.4MB
+    "sp500",             # 270KB
+    "tickers",           # 4.8MB
+    "descriptions",      # 필드 사전. 2026-07-31 이후 무변경
 )
-# 13F 원자료는 분기 공시다. 542MB 를 매일 확인할 이유가 없다.
-WEEKLY_TABLES = ("holdings", "holdings_investor")
-# 필드 사전. 2026-07-31 이후 안 바뀌었다.
-MONTHLY_TABLES = ("descriptions",)
-
-_CADENCES = {"daily": DAILY_TABLES, "weekly": WEEKLY_TABLES, "monthly": MONTHLY_TABLES}
 
 MANIFEST_NAME = "manifest.json"
 
@@ -79,10 +81,16 @@ def fetch_listing(*, api_key: str, opener=urllib.request.urlopen) -> dict[str, s
     }
 
 
-def plan_downloads(listing: dict[str, str], *, cadence: str) -> dict[str, str]:
-    """이번 주기에 볼 테이블 중 벤더가 실제로 제공하는 것만."""
-    wanted = _CADENCES[cadence]
-    return {table: listing[table] for table in wanted if table in listing}
+def plan_sync(listing: dict[str, str]) -> tuple[dict[str, str], tuple[str, ...]]:
+    """`(받을_계획, 벤더가_안_준_테이블)`.
+
+    누락을 **반환값으로** 드러낸다. 예전에는 `if table in listing` 로 조용히
+    걸러서, stocks 하나가 목록에서 빠져도 로그 어디에도 안 남았다 — 그리고
+    다음 빌드는 어제 zip 으로 정상 완주했다.
+    """
+    plan = {table: listing[table] for table in SUBSCRIBED_TABLES if table in listing}
+    missing = tuple(table for table in SUBSCRIBED_TABLES if table not in listing)
+    return plan, missing
 
 
 # ----------------------------------------------------------------- 매니페스트
@@ -161,15 +169,17 @@ def download(table: str, dest: Path, *, api_key: str, opener=urllib.request.urlo
     return written
 
 
-def sync(raw_dir: Path, *, cadence: str, api_key: str) -> dict[str, dict]:
-    """이번 주기 테이블을 최신 상태로 맞춘다. 반환값은 갱신된 매니페스트."""
+def sync(raw_dir: Path, *, api_key: str) -> dict[str, dict]:
+    """구독 14개를 벤더 최신본과 맞춘다. 반환값은 갱신된 매니페스트."""
     raw_dir = Path(raw_dir)
     listing = fetch_listing(api_key=api_key)
-    plan = plan_downloads(listing, cadence=cadence)
+    plan, missing = plan_sync(listing)
     manifest = read_manifest(raw_dir)
 
+    if missing:
+        print(f"⚠️  벤더 목록에 없는 테이블: {', '.join(missing)}", flush=True)
     if not plan:
-        print(f"⚠️  '{cadence}' 주기에 해당하는 테이블을 벤더 목록에서 못 찾았습니다", flush=True)
+        print("⚠️  벤더 목록에서 구독 테이블을 하나도 못 찾았습니다", flush=True)
         return manifest
 
     skipped, fetched, total_bytes = [], [], 0
@@ -193,7 +203,7 @@ def sync(raw_dir: Path, *, cadence: str, api_key: str) -> dict[str, dict]:
         write_manifest(raw_dir, manifest)
 
     print(
-        f"✅ {cadence}: 새로 받음 {len(fetched)}개 ({total_bytes/1e6:.0f}MB), "
+        f"✅ 새로 받음 {len(fetched)}개 ({total_bytes/1e6:.0f}MB), "
         f"변경 없어 건너뜀 {len(skipped)}개",
         flush=True,
     )
@@ -204,7 +214,6 @@ def sync(raw_dir: Path, *, cadence: str, api_key: str) -> dict[str, dict]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cadence", required=True, choices=sorted(_CADENCES))
     parser.add_argument(
         "--raw-dir",
         default=os.environ.get("US_RAW_DIR", "/opt/us-data/sharadar/raw"),
@@ -216,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
         print("❌ SHARADAR_API_KEY 가 없습니다", file=sys.stderr)
         return 2
 
-    sync(Path(args.raw_dir), cadence=args.cadence, api_key=api_key)
+    sync(Path(args.raw_dir), api_key=api_key)
     return 0
 
 

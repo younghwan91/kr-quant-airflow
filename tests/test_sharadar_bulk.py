@@ -16,12 +16,10 @@ import json
 import pytest
 
 from collectors.sharadar_bulk import (
-    DAILY_TABLES,
-    MONTHLY_TABLES,
-    WEEKLY_TABLES,
+    SUBSCRIBED_TABLES,
     bulk_url,
     needs_download,
-    plan_downloads,
+    plan_sync,
     read_manifest,
     write_manifest,
 )
@@ -66,44 +64,54 @@ def test_redownloads_when_size_disagrees_with_manifest(tmp_path):
     assert needs_download(path, "2026-08-15T03:56:19Z", manifest=manifest)
 
 
-# --------------------------------------------------------------- 주기별 계획
+# --------------------------------------------------------------- 구독 목록 대조
 
 
-def test_daily_plan_excludes_quarterly_and_static_tables():
-    """13F(542MB)를 매일 계획에 넣으면 분기당 1회면 될 걸 매일 확인하게 된다."""
-    listing = {t: "2026-08-15T03:00:00Z" for t in DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES}
+def test_every_paid_dataset_is_checked_every_run():
+    """구독분 14개가 전부 매일 대조 대상이다.
 
-    plan = plan_downloads(listing, cadence="daily")
-
-    assert set(plan) == set(DAILY_TABLES)
-    assert "holdings" not in plan
-    assert "descriptions" not in plan
-
-
-def test_weekly_plan_is_the_quarterly_tables():
-    listing = {t: "2026-08-15T03:00:00Z" for t in DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES}
-
-    assert set(plan_downloads(listing, cadence="weekly")) == set(WEEKLY_TABLES)
-
-
-def test_plan_skips_tables_the_vendor_did_not_list():
-    """벤더 목록에 없는 테이블을 계획에 넣으면 404 로 실패한다."""
-    listing = {"stocks": "2026-08-15T03:00:00Z"}
-
-    assert list(plan_downloads(listing, cadence="daily")) == ["stocks"]
-
-
-def test_every_paid_dataset_lands_in_exactly_one_cadence():
-    """구독분 중 어느 것도 빠지지 않고, 중복 다운로드도 없다."""
+    주기를 나눠두면 weekly/monthly 를 부르는 DAG 이 없을 때 그 테이블은
+    영원히 안 받아진다 — 실제로 holdings·holdings_investor·descriptions 가
+    그 상태였다. 요구사항은 '항상 동기화' 이므로 주기 개념 자체가 위반이다.
+    """
     paid = {
         "stocks", "daily", "fundamentals", "actions", "sp500", "tickers",
         "insiders", "holdings_ticker", "funds", "events", "metrics",
         "holdings", "holdings_investor", "descriptions",
     }
-    scheduled = DAILY_TABLES + WEEKLY_TABLES + MONTHLY_TABLES
 
-    assert set(scheduled) == paid
-    assert len(scheduled) == len(set(scheduled)), "같은 테이블이 두 주기에 있다"
+    assert set(SUBSCRIBED_TABLES) == paid
+    assert len(SUBSCRIBED_TABLES) == len(set(SUBSCRIBED_TABLES))
+
+
+def test_plan_covers_everything_the_vendor_offers():
+    listing = {t: "2026-08-16T03:00:00Z" for t in SUBSCRIBED_TABLES}
+
+    plan, missing = plan_sync(listing)
+
+    assert set(plan) == set(SUBSCRIBED_TABLES)
+    assert missing == ()
+
+
+def test_plan_reports_tables_the_vendor_did_not_list():
+    """조용히 빠지면 '변경 없어 건너뜀' 집계에도 안 잡혀 영원히 안 보인다."""
+    listing = {"stocks": "2026-08-16T03:00:00Z"}
+
+    plan, missing = plan_sync(listing)
+
+    assert list(plan) == ["stocks"]
+    assert "holdings" in missing
+    assert "descriptions" in missing
+    assert len(missing) == len(SUBSCRIBED_TABLES) - 1
+
+
+def test_plan_ignores_tables_we_do_not_subscribe_to():
+    """벤더가 새 테이블을 열어도 구독 목록에 없으면 받지 않는다."""
+    listing = {"stocks": "2026-08-16T03:00:00Z", "somethingnew": "2026-08-16T03:00:00Z"}
+
+    plan, _ = plan_sync(listing)
+
+    assert "somethingnew" not in plan
 
 
 # --------------------------------------------------------------- URL / 시크릿
@@ -187,10 +195,10 @@ def test_manifest_is_written_atomically(tmp_path):
     assert not list(tmp_path.glob("*.tmp")), "임시 파일이 남았다"
 
 
-@pytest.mark.parametrize("cadence", ["daily", "weekly", "monthly"])
-def test_manifest_json_is_human_readable(tmp_path, cadence):
+@pytest.mark.parametrize("table", ["stocks", "holdings", "descriptions"])
+def test_manifest_json_is_human_readable(tmp_path, table):
     """운영 중에 사람이 읽고 판단하는 파일이다 — 한 줄로 뭉치면 안 된다."""
-    write_manifest(tmp_path, {f"{cadence}.csv.zip": {"modified": "x", "size": 1}})
+    write_manifest(tmp_path, {f"{table}.csv.zip": {"modified": "x", "size": 1}})
 
     text = (tmp_path / "manifest.json").read_text()
 
