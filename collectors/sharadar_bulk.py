@@ -56,6 +56,47 @@ SUBSCRIBED_TABLES = (
 
 MANIFEST_NAME = "manifest.json"
 
+# `modified` 가 몇 번 연속으로 그대로면 눈에 띄게 표시할지. **빌드를 막지
+# 않는다** — 낡음은 벌크가 매번 전체 이력을 주므로 다음 실행에 저절로 채워진다.
+# 막는 건 손상(절단·행수 급감·데이터 후퇴)뿐이고 그건 게이트의 몫이다.
+#
+# 미국 거래일 캘린더를 두는 대신 정체 횟수로 근사한다 — 연휴에는 정체가
+# 자연히 길어져 관용적이 된다. 대신 "벤더가 상시 하루씩 늦다" 는 만성 지연은
+# 이 방식으로 못 잡는다. 알려진 한계다.
+DEFAULT_STALE_AFTER = 2
+STALE_AFTER: dict[str, int] = {
+    "insiders": 4,           # Form 4 — 공시가 없는 날이 있다
+    "holdings_ticker": 4,    # SF3A — 13F 집계
+    "holdings": 8,           # SF3  — 13F 원자료는 분기 공시다
+    "holdings_investor": 8,  # SF3B
+    "descriptions": 30,      # 필드 사전. 2026-07-31 이후 무변경
+}
+
+
+def stale_threshold(table: str) -> int:
+    return STALE_AFTER.get(table, DEFAULT_STALE_AFTER)
+
+
+def is_stale(table: str, entry: dict) -> bool:
+    return int(entry.get("unchanged_streak", 0)) >= stale_threshold(table)
+
+
+def record_check(entry: dict | None, vendor_modified: str, *, now: str) -> dict:
+    """이번 실행에서 벤더와 대조한 사실을 기록한 **새** 항목을 반환한다.
+
+    `modified`/`size`/`sha256` 은 **로컬 파일**의 정보라 여기서 건드리지 않는다.
+    그것들은 실제로 받았을 때만 바뀐다. 목록에서 본 값은 `vendor_modified` 다
+    — 둘을 섞으면 파일을 안 받고도 최신으로 착각해 영원히 스킵한다.
+    """
+    updated = dict(entry or {})
+    if updated.get("vendor_modified") == vendor_modified:
+        updated["unchanged_streak"] = int(updated.get("unchanged_streak", 0)) + 1
+    else:
+        updated["unchanged_streak"] = 0
+    updated["vendor_modified"] = vendor_modified
+    updated["checked_at"] = now
+    return updated
+
 
 def bulk_url(table: str, *, api_key: str) -> str:
     """벌크 zip 다운로드 URL.

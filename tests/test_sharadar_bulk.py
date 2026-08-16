@@ -16,11 +16,15 @@ import json
 import pytest
 
 from collectors.sharadar_bulk import (
+    DEFAULT_STALE_AFTER,
     SUBSCRIBED_TABLES,
     bulk_url,
+    is_stale,
     needs_download,
     plan_sync,
     read_manifest,
+    record_check,
+    stale_threshold,
     write_manifest,
 )
 
@@ -204,3 +208,97 @@ def test_manifest_json_is_human_readable(tmp_path, table):
 
     assert "\n" in text
     assert json.loads(text)
+
+
+# ------------------------------------------------------------ 확인 시각 · 정체
+
+
+def test_first_check_starts_the_streak_at_zero():
+    entry = record_check(None, "2026-08-16T03:56:19Z", now="2026-08-16T17:30:00Z")
+
+    assert entry["vendor_modified"] == "2026-08-16T03:56:19Z"
+    assert entry["checked_at"] == "2026-08-16T17:30:00Z"
+    assert entry["unchanged_streak"] == 0
+
+
+def test_streak_grows_while_the_vendor_timestamp_stands_still():
+    entry = record_check(None, "2026-08-16T03:56:19Z", now="2026-08-16T17:30:00Z")
+    entry = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+    entry = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-18T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 2
+    assert entry["checked_at"] == "2026-08-18T17:30:00Z"
+
+
+def test_streak_resets_when_the_vendor_publishes():
+    entry = {"vendor_modified": "2026-08-16T03:56:19Z", "unchanged_streak": 5}
+
+    entry = record_check(entry, "2026-08-17T03:51:02Z", now="2026-08-17T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 0
+
+
+def test_checked_at_advances_even_when_nothing_was_downloaded():
+    """전송이 없어도 '오늘 확인했다' 는 남아야 한다 — 이게 동기화의 증거다."""
+    entry = {"modified": "2026-08-16T03:56:19Z", "size": 953, "sha256": "abc"}
+
+    updated = record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+
+    assert updated["checked_at"] == "2026-08-17T17:30:00Z"
+    assert updated["modified"] == "2026-08-16T03:56:19Z"  # 로컬 파일 정보는 그대로
+    assert updated["size"] == 953
+    assert updated["sha256"] == "abc"
+
+
+def test_record_check_does_not_mutate_the_input():
+    """매니페스트를 제자리에서 고치면 실패 시 되돌릴 게 없다."""
+    entry = {"vendor_modified": "2026-08-16T03:56:19Z", "unchanged_streak": 1}
+
+    record_check(entry, "2026-08-16T03:56:19Z", now="2026-08-17T17:30:00Z")
+
+    assert entry["unchanged_streak"] == 1
+
+
+def test_local_modified_is_never_overwritten_by_a_vendor_sighting():
+    """`modified` 는 로컬 파일의 값이다. 목록에서 본 값으로 덮으면 그 파일을
+    영원히 안 받는다 — needs_download 가 `modified` 로 판단하기 때문이다."""
+    entry = {"modified": "2026-08-16T03:56:19Z", "size": 953}
+
+    updated = record_check(entry, "2026-08-17T03:51:02Z", now="2026-08-17T17:30:00Z")
+
+    assert updated["modified"] == "2026-08-16T03:56:19Z"
+    assert updated["vendor_modified"] == "2026-08-17T03:51:02Z"
+
+
+# ------------------------------------------------------------------- 정체 판정
+
+
+def test_daily_tables_are_stale_after_two_idle_checks():
+    assert not is_stale("stocks", {"unchanged_streak": 1})
+    assert is_stale("stocks", {"unchanged_streak": 2})
+
+
+def test_quarterly_tables_tolerate_long_silence():
+    """13F 원자료는 분기 공시다 — 8회 정체는 정상이다."""
+    assert not is_stale("holdings", {"unchanged_streak": 7})
+    assert is_stale("holdings", {"unchanged_streak": 8})
+
+
+def test_the_static_field_dictionary_is_allowed_to_never_change():
+    """descriptions 는 2026-07-31 이후 안 바뀌었다 — 정상이다."""
+    assert not is_stale("descriptions", {"unchanged_streak": 29})
+
+
+def test_an_unknown_table_falls_back_to_the_daily_threshold():
+    assert stale_threshold("something_new") == DEFAULT_STALE_AFTER
+
+
+def test_a_never_checked_entry_is_not_stale():
+    """첫 실행에는 정체가 있을 수 없다."""
+    assert not is_stale("stocks", {})
+
+
+def test_every_subscribed_table_has_a_threshold():
+    """임계값을 안 정한 테이블이 조용히 기본값으로 새면 안 된다."""
+    for table in SUBSCRIBED_TABLES:
+        assert stale_threshold(table) > 0
