@@ -70,11 +70,11 @@ spare PC (Ubuntu, 이 저장소)                                 main PC
 │  ── 한국 ────────────────────────────────      │
 │   -m collectors.X  ──upsert──►  TimescaleDB   │◄──psql───┐
 │                                  (5432, LAN)   │          │
-│                                                │     ┌────┴─────┐
-│  ── 미국 (Sharadar) ─────────────────────      │     │ 분석/백테 │
-│   -m collectors.sharadar_bulk                  │     │  kr-quant │
-│        │ bulk zip (modified 바뀐 것만)          │     │ opt_portfolio│
-│        ▼                                       │     └────┬─────┘
+│                                                │     ┌─────────┴──────────┐
+│  ── 미국 (Sharadar) ─────────────────────      │     │     분석/백테      │
+│   -m collectors.sharadar_bulk                  │     │      kr-quant      │
+│        │ bulk zip (modified 바뀐 것만)          │     │ portfolio-research │
+│        ▼                                       │     └─────────┬──────────┘
 │   sharadar/raw/  ──►  -m collectors.sharadar_build        │
 │                            │ build → gate      │          │
 │                            ▼ os.replace        │          │
@@ -172,7 +172,7 @@ docker compose up -d
   매번 전체 이력을 주므로 다음 실행에 저절로 채워진다. 막는 것은 손상(절단·
   체크섬 불일치·행수 급감·최신일 후퇴)뿐이다. 설계는
   [`2026-08-16-sharadar-sync-verification-design.md`](docs/superpowers/specs/2026-08-16-sharadar-sync-verification-design.md).
-- **수집 로직은 이 저장소에 없다.** `opt_portfolio`(sibling)의 `opt-factor ingest`를
+- **수집 로직은 이 저장소에 없다.** `portfolio-research`(sibling)의 `opt-factor ingest`를
   부른다 — `weekly_price_adjust`가 kr-quant를 쓰는 것과 같은 구조(ro 마운트 +
   `PYTHONPATH`, pip install 없음). `_csv_daily`(백만달러 환산)·`_csv_tickers`
   (`is_delisted` 리네임)·`_csv_fundamentals`(PIT 위반 제외)는 실제 버그에서 나온
@@ -188,7 +188,7 @@ docker compose up -d
   평시엔 훨씬 적다. 빌드는 전체 약 45분(실측: SEP 4,626만 행 10.6분, DAILY 4,007만 행 28.7분). `wait_and_stop.sh`가
   실행 중인 런을 기다리므로 잘리지 않는다(22:00 안전장치).
 - **아직 스토어에 안 들어가는 것**: funds(SFP)·holdings(SF3)·holdings_investor
-  (SF3B)·events. 구독분이라 raw 아카이브에는 받아두지만, `opt_portfolio`에 테이블이
+  (SF3B)·events. 구독분이라 raw 아카이브에는 받아두지만, `portfolio-research`에 테이블이
   없어 적재는 못 한다. `metrics`는 종목당 1행 최신 스냅샷뿐이라(히스토리 없음)
   백테스트에 쓰면 look-ahead다.
 
@@ -324,7 +324,7 @@ TimescaleDB 접속 정보(`TIMESCALE_*`)는 LAN 내부용이라 평문 컨테이
 | 🇰🇷 한국 주식 | **[krx-fundamentals-api](https://github.com/younghwan91/krx-fundamentals-api)** | 국내 기업 펀더멘탈 REST API — 재무제표·투자지표·배당·종목 스크리닝 (DART + KRX + 네이버) |
 | 🇰🇷 한국 주식 | **[krx-news-rest-api](https://github.com/younghwan91/krx-news-rest-api)** | 한국 주식 뉴스·공시 수집 REST API (FastAPI + Redis) |
 | 🇰🇷 한국 주식 | **[kr-quant](https://github.com/younghwan91/kr-quant)** | 코스피·코스닥 알파 리서치 — walk-forward·랜덤 음성대조·purged CV·Deflated Sharpe 를 CI 가드레일로 강제 |
-| 🇺🇸 미국 주식 | **[opt_portfolio](https://github.com/younghwan91/opt_portfolio)** | 미국주식 팩터 엔진 — point-in-time·생존편향 보정 데이터 위에서 walk-forward 를 Deflated Sharpe 로 게이팅 (+ VAA 자산배분 백테스터) |
+| 🇺🇸 미국 주식 | **[portfolio-research](https://github.com/younghwan91/portfolio-research)** | 미국주식 팩터 엔진 — point-in-time·생존편향 보정 데이터 위에서 walk-forward 를 Deflated Sharpe·PBO 로 게이팅 (+ ETF 전술배분 TAA — 9개 사전등록, 채택 0) |
 | 🇺🇸 미국 주식 | **[automated-stock-trading-systems](https://github.com/younghwan91/automated-stock-trading-systems)** | Bensdorp 의 7개 비상관 트레이딩 시스템 백테스터 (교육용 재구현) |
 | ₿ 암호화폐 | **[quantbox-engine](https://github.com/younghwan91/quantbox-engine)** | 암호화폐 선물 백테스트·실행 엔진 — 룩어헤드 0, 백테스트↔실거래 일체화 |
 
